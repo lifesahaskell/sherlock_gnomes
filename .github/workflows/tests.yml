@@ -29,7 +29,7 @@ jobs:
       EMBEDDING_MODEL: text-embedding-3-small
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -51,10 +51,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 20
           cache: npm
@@ -83,7 +83,7 @@ jobs:
       POLL_INTERVAL_SECONDS: 3
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Start Postgres service
         run: docker compose up -d postgres
@@ -114,7 +114,7 @@ jobs:
 
       - name: Upload integration logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: integration-compose-logs
           path: integration-compose.log
@@ -149,7 +149,7 @@ jobs:
       EMBEDDING_MODEL: text-embedding-3-small
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust toolchain with llvm-tools
         uses: dtolnay/rust-toolchain@stable
@@ -174,7 +174,7 @@ jobs:
           cargo llvm-cov --manifest-path backend/Cargo.toml --lcov --output-path backend/target/llvm-cov/lcov.info
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 20
           cache: npm
@@ -187,14 +187,14 @@ jobs:
         run: npm run test:coverage --prefix frontend
 
       - name: Upload backend coverage artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: backend-coverage-lcov
           path: backend/target/llvm-cov/lcov.info
           if-no-files-found: error
 
       - name: Upload frontend coverage artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: frontend-coverage
           path: frontend/coverage
