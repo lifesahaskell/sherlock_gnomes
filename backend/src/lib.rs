@@ -13,17 +13,24 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
-use walkdir::WalkDir;
+
+mod indexing;
+
+use indexing::{
+    EnqueueIndexResponse, HybridSearch, IndexJobView, IndexStatusView, IndexingService, SearchError,
+};
 
 #[derive(Clone)]
 struct AppState {
     root_dir: Arc<PathBuf>,
+    indexing: Option<Arc<IndexingService>>,
 }
 
 #[derive(Serialize)]
 struct HealthResponse {
     status: &'static str,
     root_dir: String,
+    indexed_search_enabled: bool,
 }
 
 #[derive(Deserialize)]
@@ -75,6 +82,23 @@ struct SearchMatch {
     line: String,
 }
 
+#[derive(Serialize)]
+struct HybridSearchResponse {
+    query: String,
+    warnings: Vec<String>,
+    matches: Vec<HybridSearchMatch>,
+}
+
+#[derive(Serialize)]
+struct HybridSearchMatch {
+    path: String,
+    start_line: usize,
+    end_line: usize,
+    snippet: String,
+    score: f64,
+    sources: Vec<String>,
+}
+
 #[derive(Deserialize)]
 struct AskRequest {
     question: String,
@@ -93,6 +117,13 @@ struct FileContext {
     preview: String,
 }
 
+#[derive(Serialize)]
+struct IndexStatusResponse {
+    current_job: Option<IndexJobView>,
+    pending: bool,
+    last_completed_job: Option<IndexJobView>,
+}
+
 pub fn load_root_dir_from_env() -> Result<PathBuf, String> {
     let root_dir = env::var("EXPLORER_ROOT")
         .ok()
@@ -101,13 +132,24 @@ pub fn load_root_dir_from_env() -> Result<PathBuf, String> {
 
     root_dir
         .canonicalize()
-        .map_err(|e| format!("EXPLORER_ROOT must point to an existing directory: {e}"))
+        .map_err(|error| format!("EXPLORER_ROOT must point to an existing directory: {error}"))
+}
+
+pub async fn load_indexing_from_env(
+    root_dir: Arc<PathBuf>,
+) -> Result<Option<IndexingService>, String> {
+    IndexingService::from_env(root_dir).await
 }
 
 pub fn build_app(root_dir: PathBuf) -> Router {
+    build_app_with_indexing(root_dir, None)
+}
+
+pub fn build_app_with_indexing(root_dir: PathBuf, indexing: Option<IndexingService>) -> Router {
     let root_dir = root_dir.canonicalize().unwrap_or(root_dir);
     let state = AppState {
         root_dir: Arc::new(root_dir),
+        indexing: indexing.map(Arc::new),
     };
 
     Router::new()
@@ -115,6 +157,9 @@ pub fn build_app(root_dir: PathBuf) -> Router {
         .route("/api/tree", get(get_tree))
         .route("/api/file", get(get_file))
         .route("/api/search", get(search))
+        .route("/api/search/hybrid", get(search_hybrid))
+        .route("/api/index", post(start_indexing))
+        .route("/api/index/status", get(index_status))
         .route("/api/ask", post(ask))
         .with_state(state)
         .layer(CorsLayer::permissive())
@@ -124,6 +169,7 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok",
         root_dir: state.root_dir.display().to_string(),
+        indexed_search_enabled: state.indexing.is_some(),
     })
 }
 
@@ -137,11 +183,11 @@ async fn get_tree(
     }
 
     let mut entries = Vec::new();
-    for entry in fs::read_dir(&resolved).map_err(|e| AppError::internal(e.to_string()))? {
-        let entry = entry.map_err(|e| AppError::internal(e.to_string()))?;
+    for entry in fs::read_dir(&resolved).map_err(|error| AppError::internal(error.to_string()))? {
+        let entry = entry.map_err(|error| AppError::internal(error.to_string()))?;
         let file_type = entry
             .file_type()
-            .map_err(|e| AppError::internal(e.to_string()))?;
+            .map_err(|error| AppError::internal(error.to_string()))?;
         let name = entry.file_name().to_string_lossy().to_string();
         let relative_path = to_relative_path(&state.root_dir, &entry.path())?;
         entries.push(TreeEntry {
@@ -155,10 +201,10 @@ async fn get_tree(
         });
     }
 
-    entries.sort_by(|a, b| match (a.kind, b.kind) {
+    entries.sort_by(|left, right| match (left.kind, right.kind) {
         ("directory", "file") => std::cmp::Ordering::Less,
         ("file", "directory") => std::cmp::Ordering::Greater,
-        _ => a.name.cmp(&b.name),
+        _ => left.name.cmp(&right.name),
     });
 
     Ok(Json(TreeResponse {
@@ -176,7 +222,8 @@ async fn get_file(
         return Err(AppError::bad_request("path is not a file"));
     }
 
-    let metadata = fs::metadata(&resolved).map_err(|e| AppError::internal(e.to_string()))?;
+    let metadata =
+        fs::metadata(&resolved).map_err(|error| AppError::internal(error.to_string()))?;
     if metadata.len() > 500_000 {
         return Err(AppError::bad_request(
             "file is too large to display (max 500KB)",
@@ -196,65 +243,94 @@ async fn search(
     State(state): State<AppState>,
     Query(query): Query<SearchQuery>,
 ) -> Result<Json<SearchResponse>, AppError> {
-    let search_path = resolve_within_root(&state.root_dir, query.path.as_deref())?;
-    if !search_path.is_dir() {
-        return Err(AppError::bad_request("search path must be a directory"));
-    }
+    let service = indexing_service(&state)?;
 
     let q = query.query.trim();
     if q.is_empty() {
         return Err(AppError::bad_request("query cannot be empty"));
     }
 
+    validate_filter_path(query.path.as_deref())?;
+
     let limit = query.limit.unwrap_or(30).min(100);
-    let q_lower = q.to_lowercase();
-    let mut matches = Vec::new();
-
-    for entry in WalkDir::new(&search_path)
-        .into_iter()
-        .filter_map(Result::ok)
-    {
-        let path = entry.path();
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        if is_ignored(path) {
-            continue;
-        }
-        let Ok(metadata) = entry.metadata() else {
-            continue;
-        };
-        if metadata.len() > 2_000_000 {
-            continue;
-        }
-
-        let Ok(content) = fs::read_to_string(path) else {
-            continue;
-        };
-        if content.contains('\0') {
-            continue;
-        }
-
-        for (index, line) in content.lines().enumerate() {
-            if line.to_lowercase().contains(&q_lower) {
-                matches.push(SearchMatch {
-                    path: to_relative_path(&state.root_dir, path)?,
-                    line_number: index + 1,
-                    line: line.trim().to_string(),
-                });
-                if matches.len() >= limit {
-                    return Ok(Json(SearchResponse {
-                        query: q.to_string(),
-                        matches,
-                    }));
-                }
-            }
-        }
-    }
+    let matches = service
+        .keyword_search(q, query.path.as_deref(), limit)
+        .await
+        .map_err(app_error_from_search)?;
 
     Ok(Json(SearchResponse {
         query: q.to_string(),
-        matches,
+        matches: matches
+            .into_iter()
+            .map(|item| SearchMatch {
+                path: item.path,
+                line_number: item.line_number,
+                line: item.line,
+            })
+            .collect(),
+    }))
+}
+
+async fn search_hybrid(
+    State(state): State<AppState>,
+    Query(query): Query<SearchQuery>,
+) -> Result<Json<HybridSearchResponse>, AppError> {
+    let service = indexing_service(&state)?;
+
+    let q = query.query.trim();
+    if q.is_empty() {
+        return Err(AppError::bad_request("query cannot be empty"));
+    }
+
+    validate_filter_path(query.path.as_deref())?;
+
+    let limit = query.limit.unwrap_or(30).min(100);
+    let HybridSearch { warnings, matches } = service
+        .hybrid_search(q, query.path.as_deref(), limit)
+        .await
+        .map_err(app_error_from_search)?;
+
+    Ok(Json(HybridSearchResponse {
+        query: q.to_string(),
+        warnings,
+        matches: matches
+            .into_iter()
+            .map(|item| HybridSearchMatch {
+                path: item.path,
+                start_line: item.start_line,
+                end_line: item.end_line,
+                snippet: item.snippet,
+                score: item.score,
+                sources: item.sources,
+            })
+            .collect(),
+    }))
+}
+
+async fn start_indexing(
+    State(state): State<AppState>,
+    Json(_request): Json<serde_json::Value>,
+) -> Result<(StatusCode, Json<EnqueueIndexResponse>), AppError> {
+    let service = indexing_service(&state)?;
+    let response = service.enqueue_index().await.map_err(AppError::internal)?;
+
+    Ok((StatusCode::ACCEPTED, Json(response)))
+}
+
+async fn index_status(
+    State(state): State<AppState>,
+) -> Result<Json<IndexStatusResponse>, AppError> {
+    let service = indexing_service(&state)?;
+    let IndexStatusView {
+        current_job,
+        pending,
+        last_completed_job,
+    } = service.status().await.map_err(AppError::internal)?;
+
+    Ok(Json(IndexStatusResponse {
+        current_job,
+        pending,
+        last_completed_job,
     }))
 }
 
@@ -305,6 +381,34 @@ async fn ask(
     Ok(Json(AskResponse { guidance, context }))
 }
 
+fn indexing_service(state: &AppState) -> Result<Arc<IndexingService>, AppError> {
+    state.indexing.clone().ok_or_else(|| {
+        AppError::service_unavailable(
+            "DATABASE_URL is required for indexed search and indexing endpoints",
+        )
+    })
+}
+
+fn app_error_from_search(error: SearchError) -> AppError {
+    match error {
+        SearchError::NoIndex => AppError::conflict(error.message()),
+        SearchError::Message(message) => AppError::internal(message),
+    }
+}
+
+fn validate_filter_path(path: Option<&str>) -> Result<(), AppError> {
+    if let Some(value) = path {
+        let relative = Path::new(value);
+        if relative.is_absolute() || contains_parent_dir(relative) {
+            return Err(AppError::bad_request(
+                "path must be relative and cannot contain parent traversal",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 fn resolve_within_root(root: &Path, requested: Option<&str>) -> Result<PathBuf, AppError> {
     match requested {
         None => Ok(root.to_path_buf()),
@@ -335,16 +439,8 @@ fn contains_parent_dir(path: &Path) -> bool {
 fn to_relative_path(root: &Path, full_path: &Path) -> Result<String, AppError> {
     full_path
         .strip_prefix(root)
-        .map(|p| p.to_string_lossy().to_string())
+        .map(|path| path.to_string_lossy().to_string())
         .map_err(|_| AppError::internal("failed to compute relative path"))
-}
-
-fn is_ignored(path: &Path) -> bool {
-    let ignored_segments = [".git", "node_modules", "target", ".next", ".turbo"];
-    path.components().any(|component| {
-        let part = component.as_os_str().to_string_lossy();
-        ignored_segments.contains(&part.as_ref())
-    })
 }
 
 #[derive(Debug)]
@@ -357,6 +453,20 @@ impl AppError {
     fn bad_request(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
+            message: message.into(),
+        }
+    }
+
+    fn conflict(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            message: message.into(),
+        }
+    }
+
+    fn service_unavailable(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
             message: message.into(),
         }
     }
@@ -387,13 +497,6 @@ mod tests {
         assert!(contains_parent_dir(Path::new("../secret.txt")));
         assert!(contains_parent_dir(Path::new("src/../main.rs")));
         assert!(!contains_parent_dir(Path::new("src/main.rs")));
-    }
-
-    #[test]
-    fn ignored_segment_detection_works() {
-        assert!(is_ignored(Path::new("repo/node_modules/pkg/index.js")));
-        assert!(is_ignored(Path::new("repo/.git/config")));
-        assert!(!is_ignored(Path::new("repo/src/lib.rs")));
     }
 
     #[test]
@@ -429,5 +532,11 @@ mod tests {
 
         let resolved = resolve_within_root(&root, Some("good.txt")).expect("resolve path");
         assert_eq!(resolved, file.canonicalize().expect("canonicalize file"));
+    }
+
+    #[test]
+    fn validate_filter_path_rejects_parent_traversal() {
+        let result = validate_filter_path(Some("src/../secrets"));
+        assert!(result.is_err());
     }
 }

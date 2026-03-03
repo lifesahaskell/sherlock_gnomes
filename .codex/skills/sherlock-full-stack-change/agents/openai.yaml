@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sherlock Full-Stack Change"
+  short_description: "Coordinate backend + frontend + data changes safely."
+  default_prompt: "Use this skill when implementing a change that spans frontend, backend, API contracts, and tests."

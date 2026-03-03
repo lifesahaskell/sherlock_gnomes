@@ -1,4 +1,16 @@
 services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_DB: sherlock
+      POSTGRES_USER: sherlock
+      POSTGRES_PASSWORD: sherlock
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+
   backend:
     build:
       context: .
@@ -7,8 +19,14 @@ services:
       HOST: 0.0.0.0
       PORT: 8787
       EXPLORER_ROOT: /workspace
+      DATABASE_URL: postgres://sherlock:sherlock@postgres:5432/sherlock
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-openai}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     volumes:
       - ./:/workspace:ro
+    depends_on:
+      - postgres
     ports:
       - "8787:8787"
     restart: unless-stopped
@@ -27,3 +45,6 @@ services:
     ports:
       - "3000:3000"
     restart: unless-stopped
+
+volumes:
+  pgdata:

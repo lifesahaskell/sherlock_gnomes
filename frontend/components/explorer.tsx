@@ -3,12 +3,18 @@
 import React from "react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
+  AskResponse,
+  HybridSearchMatch,
+  IndexStatusResponse,
+  SearchMatch,
+  TreeEntry,
   askCodebase,
   getFile,
+  getIndexStatus,
   getTree,
   searchCode,
-  SearchMatch,
-  TreeEntry
+  searchHybrid,
+  startIndexing
 } from "@/lib/api";
 
 type BusyState = {
@@ -16,13 +22,17 @@ type BusyState = {
   file: boolean;
   search: boolean;
   ask: boolean;
+  index: boolean;
 };
+
+type SearchMode = "hybrid" | "keyword";
 
 const INITIAL_BUSY: BusyState = {
   tree: false,
   file: false,
   search: false,
-  ask: false
+  ask: false,
+  index: false
 };
 
 export default function Explorer() {
@@ -35,15 +45,19 @@ export default function Explorer() {
   const [selectedFile, setSelectedFile] = useState("");
   const [fileContent, setFileContent] = useState("");
 
+  const [searchMode, setSearchMode] = useState<SearchMode>("hybrid");
   const [searchQuery, setSearchQuery] = useState("");
-  const [searchResults, setSearchResults] = useState<SearchMatch[]>([]);
+  const [keywordResults, setKeywordResults] = useState<SearchMatch[]>([]);
+  const [hybridResults, setHybridResults] = useState<HybridSearchMatch[]>([]);
+  const [searchWarnings, setSearchWarnings] = useState<string[]>([]);
+  const [needsIndex, setNeedsIndex] = useState(false);
 
   const [contextPaths, setContextPaths] = useState<string[]>([]);
   const [question, setQuestion] = useState("");
   const [guidance, setGuidance] = useState("");
-  const [contextPreview, setContextPreview] = useState<
-    { path: string; preview: string }[]
-  >([]);
+  const [contextPreview, setContextPreview] = useState<AskResponse["context"]>([]);
+
+  const [indexStatus, setIndexStatus] = useState<IndexStatusResponse | null>(null);
 
   const breadcrumbs = useMemo(() => {
     if (!currentPath) {
@@ -56,9 +70,31 @@ export default function Explorer() {
     }));
   }, [currentPath]);
 
+  const searchMatchCount = searchMode === "hybrid" ? hybridResults.length : keywordResults.length;
+  const shouldPollIndexStatus = Boolean(
+    indexStatus?.pending ||
+      indexStatus?.current_job?.status === "queued" ||
+      indexStatus?.current_job?.status === "running"
+  );
+
   useEffect(() => {
     void loadTree("");
+    void refreshIndexStatus(false);
   }, []);
+
+  useEffect(() => {
+    if (!shouldPollIndexStatus) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      void refreshIndexStatus(false);
+    }, 2_000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [shouldPollIndexStatus]);
 
   async function loadTree(path: string) {
     try {
@@ -91,6 +127,34 @@ export default function Explorer() {
     }
   }
 
+  async function refreshIndexStatus(showError = true) {
+    try {
+      const response = await getIndexStatus();
+      setIndexStatus(response);
+      if (showError) {
+        setError("");
+      }
+    } catch (err) {
+      if (showError) {
+        setError((err as Error).message);
+      }
+    }
+  }
+
+  async function triggerIndexing() {
+    try {
+      setBusy((prev) => ({ ...prev, index: true }));
+      setError("");
+      setNeedsIndex(false);
+      await startIndexing();
+      await refreshIndexStatus(false);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy((prev) => ({ ...prev, index: false }));
+    }
+  }
+
   async function runSearch(event: FormEvent) {
     event.preventDefault();
     if (!searchQuery.trim()) {
@@ -100,10 +164,24 @@ export default function Explorer() {
     try {
       setBusy((prev) => ({ ...prev, search: true }));
       setError("");
-      const response = await searchCode(searchQuery.trim(), currentPath, 50);
-      setSearchResults(response.matches);
+      setNeedsIndex(false);
+      setSearchWarnings([]);
+
+      if (searchMode === "hybrid") {
+        const response = await searchHybrid(searchQuery.trim(), currentPath, 50);
+        setHybridResults(response.matches);
+        setKeywordResults([]);
+        setSearchWarnings(response.warnings);
+      } else {
+        const response = await searchCode(searchQuery.trim(), currentPath, 50);
+        setKeywordResults(response.matches);
+        setHybridResults([]);
+        setSearchWarnings([]);
+      }
     } catch (err) {
-      setError((err as Error).message);
+      const message = (err as Error).message;
+      setError(message);
+      setNeedsIndex(message.includes("no index exists yet"));
     } finally {
       setBusy((prev) => ({ ...prev, search: false }));
     }
@@ -235,8 +313,47 @@ export default function Explorer() {
         </section>
 
         <aside className="card side-card">
+          <section className="index-card">
+            <div className="card-head">
+              <h3>Index status</h3>
+              <button type="button" onClick={() => void triggerIndexing()} disabled={busy.index}>
+                {busy.index ? "Starting..." : "Start/Reindex"}
+              </button>
+            </div>
+            {indexStatus?.current_job ? (
+              <p className="subtle">
+                {indexStatus.current_job.status.toUpperCase()} · scanned {indexStatus.current_job.files_scanned}
+                , indexed {indexStatus.current_job.files_indexed}, blocks {indexStatus.current_job.blocks_indexed}
+              </p>
+            ) : (
+              <p className="subtle">No indexing jobs yet.</p>
+            )}
+            {indexStatus?.pending ? <p className="subtle">A newer indexing request is queued.</p> : null}
+            {indexStatus?.last_completed_job?.status === "failed" ? (
+              <p className="error-inline">
+                Last job failed: {indexStatus.last_completed_job.error ?? "unknown error"}
+              </p>
+            ) : null}
+          </section>
+
           <form className="search-form" onSubmit={runSearch}>
             <label htmlFor="search-input">Search code</label>
+            <div className="mode-toggle" role="group" aria-label="Search mode">
+              <button
+                type="button"
+                className={searchMode === "hybrid" ? "active" : ""}
+                onClick={() => setSearchMode("hybrid")}
+              >
+                Hybrid
+              </button>
+              <button
+                type="button"
+                className={searchMode === "keyword" ? "active" : ""}
+                onClick={() => setSearchMode("keyword")}
+              >
+                Keyword
+              </button>
+            </div>
             <div className="row">
               <input
                 id="search-input"
@@ -251,16 +368,43 @@ export default function Explorer() {
           </form>
 
           <div className="search-results">
-            <h3>Matches ({searchResults.length})</h3>
+            <h3>Matches ({searchMatchCount})</h3>
+            {needsIndex ? (
+              <div className="search-cta">
+                <p>No index exists yet. Start indexing to enable search.</p>
+                <button type="button" onClick={() => void triggerIndexing()} disabled={busy.index}>
+                  Start Indexing
+                </button>
+              </div>
+            ) : null}
+            {searchWarnings.map((warning) => (
+              <p key={warning} className="warning-inline">
+                {warning}
+              </p>
+            ))}
             <ul>
-              {searchResults.map((match) => (
-                <li key={`${match.path}:${match.line_number}`}>
-                  <button type="button" onClick={() => void openFile(match.path)}>
-                    <strong>{match.path}</strong>
-                    <span>L{match.line_number}: {match.line}</span>
-                  </button>
-                </li>
-              ))}
+              {searchMode === "keyword"
+                ? keywordResults.map((match) => (
+                    <li key={`${match.path}:${match.line_number}`}>
+                      <button type="button" onClick={() => void openFile(match.path)}>
+                        <strong>{match.path}</strong>
+                        <span>
+                          L{match.line_number}: {match.line}
+                        </span>
+                      </button>
+                    </li>
+                  ))
+                : hybridResults.map((match) => (
+                    <li key={`${match.path}:${match.start_line}:${match.end_line}`}>
+                      <button type="button" onClick={() => void openFile(match.path)}>
+                        <strong>{match.path}</strong>
+                        <span>
+                          L{match.start_line}-L{match.end_line} · {match.sources.join(" + ")}
+                        </span>
+                        <span>{match.snippet}</span>
+                      </button>
+                    </li>
+                  ))}
             </ul>
           </div>
 

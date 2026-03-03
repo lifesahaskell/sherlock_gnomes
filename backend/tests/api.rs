@@ -1,12 +1,13 @@
-use std::fs;
+use std::{fs, sync::Arc, time::Duration};
 
 use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use codebase_explorer_backend::build_app;
+use codebase_explorer_backend::{build_app, build_app_with_indexing, load_indexing_from_env};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
+use sqlx::PgPool;
 use tempfile::tempdir;
 use tower::ServiceExt;
 
@@ -47,6 +48,7 @@ async fn health_returns_ok_and_root() {
     let payload = body_json(response.into_body()).await;
     assert_eq!(payload["status"], "ok");
     assert_eq!(payload["root_dir"], root.to_string_lossy().to_string());
+    assert_eq!(payload["indexed_search_enabled"], false);
 }
 
 #[tokio::test]
@@ -144,27 +146,42 @@ async fn file_rejects_directory_and_missing_path() {
 }
 
 #[tokio::test]
-async fn search_is_case_insensitive_and_respects_limit() {
+async fn indexed_search_requires_database_configuration() {
     let temp = tempdir().expect("create temp dir");
-    fs::write(temp.path().join("first.txt"), "Alpha\nBeta\nALPHA here").expect("write first file");
-    fs::write(temp.path().join("second.txt"), "alpha again\nnothing").expect("write second file");
     let app = build_app(temp.path().canonicalize().expect("canonicalize root"));
 
     let response = app
+        .clone()
         .oneshot(get_request("/api/search?query=alpha&limit=2"))
         .await
         .expect("send search request");
 
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let payload = body_json(response.into_body()).await;
-    let matches = payload["matches"].as_array().expect("matches array");
-    assert_eq!(matches.len(), 2);
-    assert_eq!(payload["query"], "alpha");
+    assert_eq!(
+        payload["error"],
+        "DATABASE_URL is required for indexed search and indexing endpoints"
+    );
 
-    for item in matches {
-        let line = item["line"].as_str().expect("line text").to_lowercase();
-        assert!(line.contains("alpha"));
-    }
+    let hybrid_response = app
+        .clone()
+        .oneshot(get_request("/api/search/hybrid?query=alpha&limit=2"))
+        .await
+        .expect("send hybrid search request");
+    assert_eq!(hybrid_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let index_start = app
+        .clone()
+        .oneshot(post_request("/api/index", json!({})))
+        .await
+        .expect("send index start request");
+    assert_eq!(index_start.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let index_status = app
+        .oneshot(get_request("/api/index/status"))
+        .await
+        .expect("send index status request");
+    assert_eq!(index_status.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
 
 #[tokio::test]
@@ -231,4 +248,106 @@ async fn ask_caps_context_to_eight_files_and_truncates_preview_lines() {
         let preview = entry["preview"].as_str().expect("preview text");
         assert!(preview.lines().count() <= 30);
     }
+}
+
+#[tokio::test]
+async fn indexed_search_and_hybrid_work_with_database() {
+    let Some(test_database_url) = std::env::var("TEST_DATABASE_URL").ok() else {
+        return;
+    };
+
+    let temp = tempdir().expect("create temp dir");
+    fs::write(temp.path().join("alpha.rs"), "fn alpha() {}\nfn beta() {}").expect("write file");
+    let root = temp.path().canonicalize().expect("canonicalize root");
+
+    // SAFETY: This test opts into environment mutation and is gated by TEST_DATABASE_URL.
+    unsafe {
+        std::env::set_var("DATABASE_URL", &test_database_url);
+        std::env::set_var("EMBEDDING_PROVIDER", "mock");
+    }
+
+    let indexing = load_indexing_from_env(Arc::new(root.clone()))
+        .await
+        .expect("load indexing from env")
+        .expect("indexing service should be configured");
+
+    let pool = PgPool::connect(&test_database_url)
+        .await
+        .expect("connect test database");
+    sqlx::query("TRUNCATE TABLE semantic_blocks, indexed_files, index_jobs RESTART IDENTITY")
+        .execute(&pool)
+        .await
+        .expect("truncate index tables");
+
+    let app = build_app_with_indexing(root, Some(indexing));
+
+    let pre_index = app
+        .clone()
+        .oneshot(get_request("/api/search?query=alpha"))
+        .await
+        .expect("send pre-index search request");
+    assert_eq!(pre_index.status(), StatusCode::CONFLICT);
+
+    let start = app
+        .clone()
+        .oneshot(post_request("/api/index", json!({})))
+        .await
+        .expect("send index start request");
+    assert_eq!(start.status(), StatusCode::ACCEPTED);
+
+    let mut completed = false;
+    for _ in 0..30 {
+        let status_response = app
+            .clone()
+            .oneshot(get_request("/api/index/status"))
+            .await
+            .expect("send index status request");
+        assert_eq!(status_response.status(), StatusCode::OK);
+        let status_payload = body_json(status_response.into_body()).await;
+        let current_status = status_payload
+            .get("current_job")
+            .and_then(|current| current.get("status"))
+            .and_then(Value::as_str);
+        let last_status = status_payload
+            .get("last_completed_job")
+            .and_then(|current| current.get("status"))
+            .and_then(Value::as_str);
+
+        if matches!(current_status, Some("running" | "queued")) {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            continue;
+        }
+        if let Some("succeeded") = last_status {
+            completed = true;
+            break;
+        }
+        if let Some("failed") = last_status {
+            panic!("indexing job failed: {status_payload}");
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(completed, "indexing did not complete within timeout");
+
+    let keyword = app
+        .clone()
+        .oneshot(get_request("/api/search?query=alpha"))
+        .await
+        .expect("send indexed keyword search request");
+    assert_eq!(keyword.status(), StatusCode::OK);
+    let keyword_payload = body_json(keyword.into_body()).await;
+    let keyword_matches = keyword_payload["matches"]
+        .as_array()
+        .expect("matches array");
+    assert!(!keyword_matches.is_empty());
+
+    let hybrid = app
+        .oneshot(get_request("/api/search/hybrid?query=alpha"))
+        .await
+        .expect("send indexed hybrid search request");
+    assert_eq!(hybrid.status(), StatusCode::OK);
+    let hybrid_payload = body_json(hybrid.into_body()).await;
+    let hybrid_matches = hybrid_payload["matches"]
+        .as_array()
+        .expect("hybrid matches array");
+    assert!(!hybrid_matches.is_empty());
 }

@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { askCodebase, getFile, getTree, searchCode } from "@/lib/api";
+import {
+  askCodebase,
+  getFile,
+  getIndexStatus,
+  getTree,
+  searchCode,
+  searchHybrid,
+  startIndexing
+} from "@/lib/api";
 
 describe("api client", () => {
   beforeEach(() => {
@@ -60,6 +68,24 @@ describe("api client", () => {
     expect(calledUrl.searchParams.get("limit")).toBe("17");
   });
 
+  it("passes query, path, and limit for searchHybrid", async () => {
+    const mockFetch = vi.mocked(global.fetch);
+    mockFetch.mockResolvedValue(
+      new Response(JSON.stringify({ query: "Alpha", warnings: [], matches: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      })
+    );
+
+    await searchHybrid("Alpha symbol", "src", 7);
+
+    const calledUrl = new URL(String(mockFetch.mock.calls[0][0]));
+    expect(calledUrl.pathname).toBe("/api/search/hybrid");
+    expect(calledUrl.searchParams.get("query")).toBe("Alpha symbol");
+    expect(calledUrl.searchParams.get("path")).toBe("src");
+    expect(calledUrl.searchParams.get("limit")).toBe("7");
+  });
+
   it("sends JSON POST body for askCodebase", async () => {
     const mockFetch = vi.mocked(global.fetch);
     mockFetch.mockResolvedValue(
@@ -79,6 +105,49 @@ describe("api client", () => {
         headers: expect.objectContaining({ "Content-Type": "application/json" })
       })
     );
+  });
+
+  it("sends JSON POST body for startIndexing", async () => {
+    const mockFetch = vi.mocked(global.fetch);
+    mockFetch.mockResolvedValue(
+      new Response(JSON.stringify({ job_id: "abc", status: "queued", replaced_pending: false }), {
+        status: 202,
+        headers: { "Content-Type": "application/json" }
+      })
+    );
+
+    await startIndexing();
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:8787/api/index",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({}),
+        headers: expect.objectContaining({ "Content-Type": "application/json" })
+      })
+    );
+  });
+
+  it("calls index status endpoint", async () => {
+    const mockFetch = vi.mocked(global.fetch);
+    mockFetch.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          current_job: null,
+          pending: false,
+          last_completed_job: null
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        }
+      )
+    );
+
+    await getIndexStatus();
+
+    const calledUrl = new URL(String(mockFetch.mock.calls[0][0]));
+    expect(calledUrl.pathname).toBe("/api/index/status");
   });
 
   it("throws backend error message when request is not ok", async () => {

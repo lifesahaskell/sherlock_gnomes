@@ -25,6 +25,45 @@ export type SearchResponse = {
   matches: SearchMatch[];
 };
 
+export type HybridSearchMatch = {
+  path: string;
+  start_line: number;
+  end_line: number;
+  snippet: string;
+  score: number;
+  sources: string[];
+};
+
+export type HybridSearchResponse = {
+  query: string;
+  warnings: string[];
+  matches: HybridSearchMatch[];
+};
+
+export type IndexJobStatus = {
+  job_id: string;
+  status: "queued" | "running" | "succeeded" | "failed";
+  requested_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  files_scanned: number;
+  files_indexed: number;
+  blocks_indexed: number;
+  error: string | null;
+};
+
+export type IndexStatusResponse = {
+  current_job: IndexJobStatus | null;
+  pending: boolean;
+  last_completed_job: IndexJobStatus | null;
+};
+
+export type StartIndexingResponse = {
+  job_id: string;
+  status: "queued" | "running";
+  replaced_pending: boolean;
+};
+
 export type AskResponse = {
   guidance: string;
   context: { path: string; preview: string }[];
@@ -76,6 +115,21 @@ export function searchCode(
   return fetchJson<SearchResponse>(`/api/search?${params.toString()}`);
 }
 
+export function searchHybrid(
+  query: string,
+  path = "",
+  limit = 50
+): Promise<HybridSearchResponse> {
+  const params = new URLSearchParams({
+    query,
+    limit: String(limit)
+  });
+  if (path) {
+    params.set("path", path);
+  }
+  return fetchJson<HybridSearchResponse>(`/api/search/hybrid?${params.toString()}`);
+}
+
 export function askCodebase(
   question: string,
   paths: string[]
@@ -84,4 +138,15 @@ export function askCodebase(
     method: "POST",
     body: JSON.stringify({ question, paths })
   });
+}
+
+export function startIndexing(): Promise<StartIndexingResponse> {
+  return fetchJson<StartIndexingResponse>("/api/index", {
+    method: "POST",
+    body: JSON.stringify({})
+  });
+}
+
+export function getIndexStatus(): Promise<IndexStatusResponse> {
+  return fetchJson<IndexStatusResponse>("/api/index/status");
 }

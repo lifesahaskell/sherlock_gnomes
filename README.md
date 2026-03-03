@@ -2,8 +2,8 @@
 
 Monorepo scaffold for a local codebase explorer with:
 
-- `backend/`: Rust `axum` API for directory browsing, file reads, text search, and AI context assembly.
-- `frontend/`: Next.js app router UI for tree navigation, file viewing, search, and "ask with selected files".
+- `backend/`: Rust `axum` API for directory browsing, AI context assembly, repo indexing, and hybrid search.
+- `frontend/`: Next.js app router UI for tree navigation, file viewing, indexing controls, search, and "ask with selected files".
 
 ## Project layout
 
@@ -11,6 +11,7 @@ Monorepo scaffold for a local codebase explorer with:
 .
 ├── backend
 │   ├── Cargo.toml
+│   ├── migrations/
 │   ├── src/lib.rs
 │   ├── src/main.rs
 │   └── tests/api.rs
@@ -25,31 +26,60 @@ Monorepo scaffold for a local codebase explorer with:
 
 The backend serves on `http://127.0.0.1:8787` by default.
 
+Core endpoints:
+
 - `GET /health`
 - `GET /api/tree?path=<relative_dir>`
 - `GET /api/file?path=<relative_file>`
-- `GET /api/search?query=<text>&path=<relative_dir>&limit=<n>`
 - `POST /api/ask` with body:
   - `question: string`
   - `paths: string[]`
 
+Indexed search and indexing endpoints (require `DATABASE_URL`):
+
+- `POST /api/index` with body `{}`
+- `GET /api/index/status`
+- `GET /api/search?query=<text>&path=<relative_prefix>&limit=<n>`
+- `GET /api/search/hybrid?query=<text>&path=<relative_prefix>&limit=<n>`
+
 Path traversal is blocked (`..` and absolute paths are rejected), and all reads are restricted to `EXPLORER_ROOT`.
+
+`GET /api/search` and `GET /api/search/hybrid` return `409` until at least one successful index exists.
 
 ## Run locally
 
-### 1) Backend (Rust)
+### 1) Start Postgres with pgvector
+
+```bash
+docker run --name sherlock-postgres \
+  -e POSTGRES_DB=sherlock \
+  -e POSTGRES_USER=sherlock \
+  -e POSTGRES_PASSWORD=sherlock \
+  -p 5432:5432 \
+  -d pgvector/pgvector:pg17
+```
+
+### 2) Backend (Rust)
 
 ```bash
 cd backend
-EXPLORER_ROOT=.. cargo run
+DATABASE_URL=postgres://sherlock:sherlock@127.0.0.1:5432/sherlock \
+EXPLORER_ROOT=.. \
+OPENAI_API_KEY=your_key_here \
+cargo run
 ```
 
 Optional env vars:
 
+- `HOST` (default: `127.0.0.1`)
 - `PORT` (default: `8787`)
 - `EXPLORER_ROOT` (default: current directory)
+- `DATABASE_URL` (required for `/api/index*` and `/api/search*`)
+- `EMBEDDING_PROVIDER` (default: `openai`; `mock` is available for local/testing)
+- `EMBEDDING_MODEL` (default: `text-embedding-3-small`)
+- `OPENAI_API_KEY` (required when `EMBEDDING_PROVIDER=openai`)
 
-### 2) Frontend (Next.js)
+### 3) Frontend (Next.js)
 
 ```bash
 cd frontend
@@ -58,6 +88,22 @@ NEXT_PUBLIC_API_BASE=http://127.0.0.1:8787 npm run dev
 ```
 
 Open `http://127.0.0.1:3000`.
+
+### 4) Trigger indexing
+
+Use the UI `Start/Reindex` button or call the API:
+
+```bash
+curl -X POST http://127.0.0.1:8787/api/index \
+  -H 'content-type: application/json' \
+  -d '{}'
+```
+
+Poll status:
+
+```bash
+curl http://127.0.0.1:8787/api/index/status
+```
 
 ## Deployment (Docker Compose)
 
@@ -77,11 +123,15 @@ Services:
 
 - Frontend: `http://localhost:3000`
 - Backend API: `http://localhost:8787`
+- Postgres+pgvector: `localhost:5432`
 
-Optional API base override at build time:
+Optional overrides:
 
 ```bash
-NEXT_PUBLIC_API_BASE=http://localhost:8787 docker compose up --build -d
+NEXT_PUBLIC_API_BASE=http://localhost:8787 \
+OPENAI_API_KEY=your_key_here \
+EMBEDDING_PROVIDER=openai \
+docker compose up --build -d
 ```
 
 Notes:
@@ -119,6 +169,12 @@ Generate coverage reports for both backend and frontend:
 ./scripts/test-all.sh --coverage
 ```
 
+Run full-stack integration checks (requires running backend, frontend, and postgres services):
+
+```bash
+./scripts/run-integration-tests.sh
+```
+
 Coverage artifact paths:
 
 - Backend LCOV: `backend/target/llvm-cov/lcov.info`
@@ -127,11 +183,5 @@ Coverage artifact paths:
 CI:
 
 - GitHub Actions workflow at `.github/workflows/lint.yml` runs backend and frontend lint jobs on every push and pull request.
-- GitHub Actions workflow at `.github/workflows/tests.yml` runs backend tests, frontend tests, and a separate coverage job on every push and pull request.
+- GitHub Actions workflow at `.github/workflows/tests.yml` runs backend tests (with pgvector service), frontend tests, a Docker Compose full-stack integration suite, and a separate coverage job.
 - GitHub Actions workflow at `.github/workflows/audit.yml` runs dependency audits (`cargo audit` and `npm audit`) on push/pull request and on manual dispatch.
-- Coverage is report-only in CI (no percentage thresholds are enforced).
-
-## Notes
-
-- This scaffold intentionally keeps AI-provider integration out of the backend.
-- `POST /api/ask` currently builds context previews and prompt guidance. You can pipe this to OpenAI/Anthropic/local models from the frontend or a worker service.

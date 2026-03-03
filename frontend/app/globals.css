@@ -203,6 +203,66 @@ textarea {
   gap: 0.35rem;
 }
 
+.index-card {
+  display: grid;
+  gap: 0.45rem;
+  border: 1px solid var(--line);
+  border-radius: 0.7rem;
+  padding: 0.55rem;
+  background: #f9fcfd;
+}
+
+.index-card .card-head h3 {
+  margin: 0;
+  font-size: 0.93rem;
+}
+
+.index-card .card-head button {
+  border: 0;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 0.5rem;
+  padding: 0.36rem 0.64rem;
+  cursor: pointer;
+}
+
+.error-inline {
+  margin: 0;
+  color: var(--warn);
+  font-size: 0.82rem;
+}
+
+.warning-inline {
+  margin: 0;
+  border: 1px solid #f0c98a;
+  background: #fff4dd;
+  color: #7d4c00;
+  border-radius: 0.55rem;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.82rem;
+}
+
+.mode-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.3rem;
+}
+
+.mode-toggle button {
+  border: 1px solid var(--line);
+  background: #fff;
+  color: #334654;
+  border-radius: 0.5rem;
+  padding: 0.36rem 0.5rem;
+  cursor: pointer;
+}
+
+.mode-toggle button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
 .row {
   display: grid;
   grid-template-columns: 1fr auto;
@@ -274,6 +334,30 @@ button[type="submit"] {
   color: #334654;
   margin-top: 0.16rem;
   font-size: 0.84rem;
+}
+
+.search-cta {
+  border: 1px dashed var(--line);
+  background: #fff;
+  border-radius: 0.6rem;
+  padding: 0.5rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.search-cta p {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.search-cta button {
+  border: 0;
+  background: var(--accent);
+  color: white;
+  border-radius: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  cursor: pointer;
+  justify-self: start;
 }
 
 .ask-output {

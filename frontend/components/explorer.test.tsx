@@ -8,13 +8,19 @@ import * as api from "@/lib/api";
 vi.mock("@/lib/api", () => ({
   askCodebase: vi.fn(),
   getFile: vi.fn(),
+  getIndexStatus: vi.fn(),
   getTree: vi.fn(),
-  searchCode: vi.fn()
+  searchCode: vi.fn(),
+  searchHybrid: vi.fn(),
+  startIndexing: vi.fn()
 }));
 
 const mockedGetTree = vi.mocked(api.getTree);
 const mockedGetFile = vi.mocked(api.getFile);
+const mockedGetIndexStatus = vi.mocked(api.getIndexStatus);
 const mockedSearchCode = vi.mocked(api.searchCode);
+const mockedSearchHybrid = vi.mocked(api.searchHybrid);
+const mockedStartIndexing = vi.mocked(api.startIndexing);
 const mockedAskCodebase = vi.mocked(api.askCodebase);
 
 describe("Explorer", () => {
@@ -22,7 +28,18 @@ describe("Explorer", () => {
     vi.clearAllMocks();
     mockedGetTree.mockResolvedValue({ path: "", entries: [] });
     mockedGetFile.mockResolvedValue({ path: "main.rs", content: "fn main() {}" });
+    mockedGetIndexStatus.mockResolvedValue({
+      current_job: null,
+      pending: false,
+      last_completed_job: null
+    });
     mockedSearchCode.mockResolvedValue({ query: "alpha", matches: [] });
+    mockedSearchHybrid.mockResolvedValue({ query: "alpha", warnings: [], matches: [] });
+    mockedStartIndexing.mockResolvedValue({
+      job_id: "job-1",
+      status: "queued",
+      replaced_pending: false
+    });
     mockedAskCodebase.mockResolvedValue({ guidance: "ok", context: [] });
   });
 
@@ -62,9 +79,19 @@ describe("Explorer", () => {
 
   it("searches and renders match results", async () => {
     const user = userEvent.setup();
-    mockedSearchCode.mockResolvedValue({
+    mockedSearchHybrid.mockResolvedValue({
       query: "Alpha",
-      matches: [{ path: "src/lib.rs", line_number: 12, line: "Alpha result" }]
+      warnings: [],
+      matches: [
+        {
+          path: "src/lib.rs",
+          start_line: 12,
+          end_line: 18,
+          snippet: "Alpha result",
+          score: 0.03,
+          sources: ["keyword", "semantic"]
+        }
+      ]
     });
 
     render(<Explorer />);
@@ -73,10 +100,41 @@ describe("Explorer", () => {
     await user.click(screen.getByRole("button", { name: "Go" }));
 
     await waitFor(() => {
-      expect(mockedSearchCode).toHaveBeenCalledWith("Alpha", "", 50);
+      expect(mockedSearchHybrid).toHaveBeenCalledWith("Alpha", "", 50);
     });
     expect(screen.getByText("src/lib.rs")).toBeInTheDocument();
+    expect(screen.getByText(/L12-L18 · keyword \+ semantic/)).toBeInTheDocument();
+  });
+
+  it("can switch to keyword mode for search", async () => {
+    const user = userEvent.setup();
+    mockedSearchCode.mockResolvedValue({
+      query: "Alpha",
+      matches: [{ path: "src/lib.rs", line_number: 12, line: "Alpha result" }]
+    });
+
+    render(<Explorer />);
+
+    await user.click(screen.getByRole("button", { name: "Keyword" }));
+    await user.type(screen.getByLabelText("Search code"), "Alpha");
+    await user.click(screen.getByRole("button", { name: "Go" }));
+
+    await waitFor(() => {
+      expect(mockedSearchCode).toHaveBeenCalledWith("Alpha", "", 50);
+    });
     expect(screen.getByText(/L12: Alpha result/)).toBeInTheDocument();
+  });
+
+  it("starts indexing from index status controls", async () => {
+    const user = userEvent.setup();
+
+    render(<Explorer />);
+
+    await user.click(screen.getByRole("button", { name: "Start/Reindex" }));
+
+    await waitFor(() => {
+      expect(mockedStartIndexing).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("validates question and context requirements before asking", async () => {

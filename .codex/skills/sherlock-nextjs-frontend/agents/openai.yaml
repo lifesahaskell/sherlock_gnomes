@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sherlock Next.js Frontend"
+  short_description: "Maintain Next.js UI for Sherlock Gnomes."
+  default_prompt: "Use this skill when editing frontend app routes, components, API client logic, and Vitest tests."

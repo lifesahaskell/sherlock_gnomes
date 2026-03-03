@@ -8,6 +8,25 @@ jobs:
   backend-tests:
     name: Backend Tests
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_DB: sherlock
+          POSTGRES_USER: sherlock
+          POSTGRES_PASSWORD: sherlock
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U sherlock -d sherlock"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+    env:
+      DATABASE_URL: postgres://sherlock:sherlock@localhost:5432/sherlock
+      TEST_DATABASE_URL: postgres://sherlock:sherlock@localhost:5432/sherlock
+      EMBEDDING_PROVIDER: mock
+      EMBEDDING_MODEL: text-embedding-3-small
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -17,6 +36,12 @@ jobs:
 
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@v2
+
+      - name: Install psql client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Run backend migrations
+        run: psql "$DATABASE_URL" -f backend/migrations/202602260001_semantic_indexing.sql
 
       - name: Run backend tests
         run: cargo test --manifest-path backend/Cargo.toml
@@ -41,10 +66,87 @@ jobs:
       - name: Run frontend tests
         run: npm run test --prefix frontend
 
+  full-stack-integration:
+    name: Full Stack Integration
+    runs-on: ubuntu-latest
+    needs: [backend-tests, frontend-tests]
+    timeout-minutes: 30
+    env:
+      EMBEDDING_PROVIDER: mock
+      EMBEDDING_MODEL: text-embedding-3-small
+      NEXT_PUBLIC_API_BASE: http://localhost:8787
+      OPENAI_API_KEY: ""
+      BACKEND_BASE_URL: http://127.0.0.1:8787
+      FRONTEND_BASE_URL: http://127.0.0.1:3000
+      WAIT_TIMEOUT_SECONDS: 240
+      INDEX_TIMEOUT_SECONDS: 600
+      POLL_INTERVAL_SECONDS: 3
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Start Postgres service
+        run: docker compose up -d postgres
+
+      - name: Wait for Postgres readiness
+        run: |
+          for _ in {1..60}; do
+            if docker compose exec -T postgres pg_isready -U sherlock -d sherlock; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Postgres did not become ready in time" >&2
+          exit 1
+
+      - name: Apply backend migrations
+        run: cat backend/migrations/202602260001_semantic_indexing.sql | docker compose exec -T postgres psql -U sherlock -d sherlock
+
+      - name: Start backend and frontend services
+        run: docker compose up --build -d backend frontend
+
+      - name: Run integration test suite
+        run: ./scripts/run-integration-tests.sh
+
+      - name: Capture Docker logs
+        if: always()
+        run: docker compose logs --no-color > integration-compose.log || true
+
+      - name: Upload integration logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-compose-logs
+          path: integration-compose.log
+          if-no-files-found: warn
+
+      - name: Tear down Docker Compose stack
+        if: always()
+        run: docker compose down -v --remove-orphans
+
   coverage:
     name: Coverage Reports
     runs-on: ubuntu-latest
     needs: [backend-tests, frontend-tests]
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_DB: sherlock
+          POSTGRES_USER: sherlock
+          POSTGRES_PASSWORD: sherlock
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U sherlock -d sherlock"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+    env:
+      DATABASE_URL: postgres://sherlock:sherlock@localhost:5432/sherlock
+      TEST_DATABASE_URL: postgres://sherlock:sherlock@localhost:5432/sherlock
+      EMBEDDING_PROVIDER: mock
+      EMBEDDING_MODEL: text-embedding-3-small
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -59,6 +161,12 @@ jobs:
 
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov --locked
+
+      - name: Install psql client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Run backend migrations
+        run: psql "$DATABASE_URL" -f backend/migrations/202602260001_semantic_indexing.sql
 
       - name: Generate backend coverage
         run: |
