@@ -333,8 +333,13 @@ async fn indexed_search_and_hybrid_work_with_database() {
         .oneshot(get_request("/api/search?query=alpha"))
         .await
         .expect("send indexed keyword search request");
-    assert_eq!(keyword.status(), StatusCode::OK);
+    let keyword_status = keyword.status();
     let keyword_payload = body_json(keyword.into_body()).await;
+    assert_eq!(
+        keyword_status,
+        StatusCode::OK,
+        "keyword search failed with payload: {keyword_payload}"
+    );
     let keyword_matches = keyword_payload["matches"]
         .as_array()
         .expect("matches array");

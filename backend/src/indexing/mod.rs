@@ -672,12 +672,12 @@ impl IndexingService {
     }
 
     async fn has_any_index(&self) -> Result<bool, String> {
-        let row: Option<i64> = sqlx::query_scalar("SELECT 1 FROM indexed_files LIMIT 1")
-            .fetch_optional(&self.inner.pool)
+        let has_index: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM indexed_files)")
+            .fetch_one(&self.inner.pool)
             .await
             .map_err(|error| format!("failed to check index existence: {error}"))?;
 
-        Ok(row.is_some())
+        Ok(has_index)
     }
 
     async fn insert_queued_job(&self, job_id: Uuid) -> Result<(), String> {
