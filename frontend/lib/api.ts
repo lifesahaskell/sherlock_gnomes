@@ -69,6 +69,13 @@ export type AskResponse = {
   context: { path: string; preview: string }[];
 };
 
+export type HealthResponse = {
+  status: string;
+  root_dir: string;
+  indexed_search_enabled: boolean;
+  hybrid_search_enabled?: boolean;
+};
+
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:8787";
 
@@ -98,6 +105,10 @@ export function getTree(path: string): Promise<TreeResponse> {
 
 export function getFile(path: string): Promise<FileResponse> {
   return fetchJson<FileResponse>(`/api/file?path=${encodeURIComponent(path)}`);
+}
+
+export function getHealth(): Promise<HealthResponse> {
+  return fetchJson<HealthResponse>("/health");
 }
 
 export function searchCode(

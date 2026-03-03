@@ -42,6 +42,10 @@ Indexed search and indexing endpoints (require `DATABASE_URL`):
 - `GET /api/search?query=<text>&path=<relative_prefix>&limit=<n>`
 - `GET /api/search/hybrid?query=<text>&path=<relative_prefix>&limit=<n>`
 
+Feature toggle:
+
+- `HYBRID_SEARCH_ENABLED=false` disables `GET /api/search/hybrid`, which then returns `404` with `"hybrid search is disabled"`.
+
 Path traversal is blocked (`..` and absolute paths are rejected), and all reads are restricted to `EXPLORER_ROOT`.
 
 `GET /api/search` and `GET /api/search/hybrid` return `409` until at least one successful index exists.
@@ -75,6 +79,7 @@ Optional env vars:
 - `PORT` (default: `8787`)
 - `EXPLORER_ROOT` (default: current directory)
 - `DATABASE_URL` (required for `/api/index*` and `/api/search*`)
+- `HYBRID_SEARCH_ENABLED` (default: `true`; set to `false` to disable `/api/search/hybrid`)
 - `EMBEDDING_PROVIDER` (default: `openai`; `mock` is available for local/testing)
 - `EMBEDDING_MODEL` (default: `text-embedding-3-small`)
 - `OPENAI_API_KEY` (required when `EMBEDDING_PROVIDER=openai`)

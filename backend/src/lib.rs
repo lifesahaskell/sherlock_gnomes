@@ -24,6 +24,7 @@ use indexing::{
 struct AppState {
     root_dir: Arc<PathBuf>,
     indexing: Option<Arc<IndexingService>>,
+    hybrid_search_enabled: bool,
 }
 
 #[derive(Serialize)]
@@ -31,6 +32,7 @@ struct HealthResponse {
     status: &'static str,
     root_dir: String,
     indexed_search_enabled: bool,
+    hybrid_search_enabled: bool,
 }
 
 #[derive(Deserialize)]
@@ -141,15 +143,31 @@ pub async fn load_indexing_from_env(
     IndexingService::from_env(root_dir).await
 }
 
+pub fn load_hybrid_search_enabled_from_env() -> bool {
+    env::var("HYBRID_SEARCH_ENABLED")
+        .ok()
+        .and_then(|value| parse_env_bool(&value))
+        .unwrap_or(true)
+}
+
 pub fn build_app(root_dir: PathBuf) -> Router {
-    build_app_with_indexing(root_dir, None)
+    build_app_with_indexing_and_hybrid_toggle(root_dir, None, true)
 }
 
 pub fn build_app_with_indexing(root_dir: PathBuf, indexing: Option<IndexingService>) -> Router {
+    build_app_with_indexing_and_hybrid_toggle(root_dir, indexing, true)
+}
+
+pub fn build_app_with_indexing_and_hybrid_toggle(
+    root_dir: PathBuf,
+    indexing: Option<IndexingService>,
+    hybrid_search_enabled: bool,
+) -> Router {
     let root_dir = root_dir.canonicalize().unwrap_or(root_dir);
     let state = AppState {
         root_dir: Arc::new(root_dir),
         indexing: indexing.map(Arc::new),
+        hybrid_search_enabled,
     };
 
     Router::new()
@@ -170,6 +188,7 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
         status: "ok",
         root_dir: state.root_dir.display().to_string(),
         indexed_search_enabled: state.indexing.is_some(),
+        hybrid_search_enabled: state.hybrid_search_enabled,
     })
 }
 
@@ -275,6 +294,10 @@ async fn search_hybrid(
     State(state): State<AppState>,
     Query(query): Query<SearchQuery>,
 ) -> Result<Json<HybridSearchResponse>, AppError> {
+    if !state.hybrid_search_enabled {
+        return Err(AppError::not_found("hybrid search is disabled"));
+    }
+
     let service = indexing_service(&state)?;
 
     let q = query.query.trim();
@@ -436,6 +459,15 @@ fn contains_parent_dir(path: &Path) -> bool {
         .any(|component| matches!(component, Component::ParentDir))
 }
 
+fn parse_env_bool(value: &str) -> Option<bool> {
+    let normalized = value.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
 fn to_relative_path(root: &Path, full_path: &Path) -> Result<String, AppError> {
     full_path
         .strip_prefix(root)
@@ -460,6 +492,13 @@ impl AppError {
     fn conflict(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::CONFLICT,
+            message: message.into(),
+        }
+    }
+
+    fn not_found(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::NOT_FOUND,
             message: message.into(),
         }
     }
@@ -538,5 +577,21 @@ mod tests {
     fn validate_filter_path_rejects_parent_traversal() {
         let result = validate_filter_path(Some("src/../secrets"));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_env_bool_accepts_common_values() {
+        assert_eq!(parse_env_bool("true"), Some(true));
+        assert_eq!(parse_env_bool("1"), Some(true));
+        assert_eq!(parse_env_bool("yes"), Some(true));
+        assert_eq!(parse_env_bool("off"), Some(false));
+        assert_eq!(parse_env_bool("0"), Some(false));
+        assert_eq!(parse_env_bool("no"), Some(false));
+    }
+
+    #[test]
+    fn parse_env_bool_rejects_unknown_values() {
+        assert_eq!(parse_env_bool(""), None);
+        assert_eq!(parse_env_bool("banana"), None);
     }
 }

@@ -4,7 +4,10 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use codebase_explorer_backend::{build_app, build_app_with_indexing, load_indexing_from_env};
+use codebase_explorer_backend::{
+    build_app, build_app_with_indexing, build_app_with_indexing_and_hybrid_toggle,
+    load_indexing_from_env,
+};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -49,6 +52,7 @@ async fn health_returns_ok_and_root() {
     assert_eq!(payload["status"], "ok");
     assert_eq!(payload["root_dir"], root.to_string_lossy().to_string());
     assert_eq!(payload["indexed_search_enabled"], false);
+    assert_eq!(payload["hybrid_search_enabled"], true);
 }
 
 #[tokio::test]
@@ -182,6 +186,33 @@ async fn indexed_search_requires_database_configuration() {
         .await
         .expect("send index status request");
     assert_eq!(index_status.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn hybrid_search_can_be_disabled_via_feature_toggle() {
+    let temp = tempdir().expect("create temp dir");
+    let app = build_app_with_indexing_and_hybrid_toggle(
+        temp.path().canonicalize().expect("canonicalize root"),
+        None,
+        false,
+    );
+
+    let health = app
+        .clone()
+        .oneshot(get_request("/health"))
+        .await
+        .expect("send health request");
+    assert_eq!(health.status(), StatusCode::OK);
+    let health_payload = body_json(health.into_body()).await;
+    assert_eq!(health_payload["hybrid_search_enabled"], false);
+
+    let hybrid = app
+        .oneshot(get_request("/api/search/hybrid?query=alpha&limit=2"))
+        .await
+        .expect("send hybrid search request");
+    assert_eq!(hybrid.status(), StatusCode::NOT_FOUND);
+    let hybrid_payload = body_json(hybrid.into_body()).await;
+    assert_eq!(hybrid_payload["error"], "hybrid search is disabled");
 }
 
 #[tokio::test]

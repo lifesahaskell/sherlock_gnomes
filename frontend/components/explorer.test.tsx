@@ -8,6 +8,7 @@ import * as api from "@/lib/api";
 vi.mock("@/lib/api", () => ({
   askCodebase: vi.fn(),
   getFile: vi.fn(),
+  getHealth: vi.fn(),
   getIndexStatus: vi.fn(),
   getTree: vi.fn(),
   searchCode: vi.fn(),
@@ -17,6 +18,7 @@ vi.mock("@/lib/api", () => ({
 
 const mockedGetTree = vi.mocked(api.getTree);
 const mockedGetFile = vi.mocked(api.getFile);
+const mockedGetHealth = vi.mocked(api.getHealth);
 const mockedGetIndexStatus = vi.mocked(api.getIndexStatus);
 const mockedSearchCode = vi.mocked(api.searchCode);
 const mockedSearchHybrid = vi.mocked(api.searchHybrid);
@@ -28,6 +30,12 @@ describe("Explorer", () => {
     vi.clearAllMocks();
     mockedGetTree.mockResolvedValue({ path: "", entries: [] });
     mockedGetFile.mockResolvedValue({ path: "main.rs", content: "fn main() {}" });
+    mockedGetHealth.mockResolvedValue({
+      status: "ok",
+      root_dir: ".",
+      indexed_search_enabled: true,
+      hybrid_search_enabled: true
+    });
     mockedGetIndexStatus.mockResolvedValue({
       current_job: null,
       pending: false,
@@ -123,6 +131,38 @@ describe("Explorer", () => {
       expect(mockedSearchCode).toHaveBeenCalledWith("Alpha", "", 50);
     });
     expect(screen.getByText(/L12: Alpha result/)).toBeInTheDocument();
+  });
+
+  it("falls back to keyword mode when hybrid search is disabled", async () => {
+    const user = userEvent.setup();
+    mockedGetHealth.mockResolvedValue({
+      status: "ok",
+      root_dir: ".",
+      indexed_search_enabled: true,
+      hybrid_search_enabled: false
+    });
+    mockedSearchCode.mockResolvedValue({
+      query: "Alpha",
+      matches: [{ path: "src/lib.rs", line_number: 12, line: "Alpha result" }]
+    });
+
+    render(<Explorer />);
+
+    await waitFor(() => {
+      expect(mockedGetHealth).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.queryByRole("button", { name: "Hybrid" })).not.toBeInTheDocument();
+    expect(
+      screen.getByText("Hybrid search is disabled by server configuration.")
+    ).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("Search code"), "Alpha");
+    await user.click(screen.getByRole("button", { name: "Go" }));
+
+    await waitFor(() => {
+      expect(mockedSearchCode).toHaveBeenCalledWith("Alpha", "", 50);
+    });
+    expect(mockedSearchHybrid).not.toHaveBeenCalled();
   });
 
   it("starts indexing from index status controls", async () => {

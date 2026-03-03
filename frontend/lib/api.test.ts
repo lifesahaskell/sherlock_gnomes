@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   askCodebase,
   getFile,
+  getHealth,
   getIndexStatus,
   getTree,
   searchCode,
@@ -48,6 +49,29 @@ describe("api client", () => {
     const calledUrl = new URL(String(mockFetch.mock.calls[0][0]));
     expect(calledUrl.pathname).toBe("/api/file");
     expect(calledUrl.searchParams.get("path")).toBe("src/main.rs");
+  });
+
+  it("calls health endpoint", async () => {
+    const mockFetch = vi.mocked(global.fetch);
+    mockFetch.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          status: "ok",
+          root_dir: ".",
+          indexed_search_enabled: true,
+          hybrid_search_enabled: true
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        }
+      )
+    );
+
+    await getHealth();
+
+    const calledUrl = new URL(String(mockFetch.mock.calls[0][0]));
+    expect(calledUrl.pathname).toBe("/health");
   });
 
   it("passes query, path, and limit for searchCode", async () => {

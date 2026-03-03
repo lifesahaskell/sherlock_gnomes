@@ -10,6 +10,7 @@ import {
   TreeEntry,
   askCodebase,
   getFile,
+  getHealth,
   getIndexStatus,
   getTree,
   searchCode,
@@ -50,6 +51,7 @@ export default function Explorer() {
   const [keywordResults, setKeywordResults] = useState<SearchMatch[]>([]);
   const [hybridResults, setHybridResults] = useState<HybridSearchMatch[]>([]);
   const [searchWarnings, setSearchWarnings] = useState<string[]>([]);
+  const [hybridSearchEnabled, setHybridSearchEnabled] = useState(true);
   const [needsIndex, setNeedsIndex] = useState(false);
 
   const [contextPaths, setContextPaths] = useState<string[]>([]);
@@ -70,7 +72,9 @@ export default function Explorer() {
     }));
   }, [currentPath]);
 
-  const searchMatchCount = searchMode === "hybrid" ? hybridResults.length : keywordResults.length;
+  const effectiveSearchMode: SearchMode = hybridSearchEnabled ? searchMode : "keyword";
+  const searchMatchCount =
+    effectiveSearchMode === "hybrid" ? hybridResults.length : keywordResults.length;
   const shouldPollIndexStatus = Boolean(
     indexStatus?.pending ||
       indexStatus?.current_job?.status === "queued" ||
@@ -79,6 +83,7 @@ export default function Explorer() {
 
   useEffect(() => {
     void loadTree("");
+    void loadHealth();
     void refreshIndexStatus(false);
   }, []);
 
@@ -141,6 +146,21 @@ export default function Explorer() {
     }
   }
 
+  async function loadHealth() {
+    try {
+      const response = await getHealth();
+      const enabled = response.hybrid_search_enabled !== false;
+      setHybridSearchEnabled(enabled);
+      if (!enabled) {
+        setSearchMode("keyword");
+        setHybridResults([]);
+        setSearchWarnings([]);
+      }
+    } catch {
+      setHybridSearchEnabled(true);
+    }
+  }
+
   async function triggerIndexing() {
     try {
       setBusy((prev) => ({ ...prev, index: true }));
@@ -167,7 +187,8 @@ export default function Explorer() {
       setNeedsIndex(false);
       setSearchWarnings([]);
 
-      if (searchMode === "hybrid") {
+      const mode: SearchMode = hybridSearchEnabled ? searchMode : "keyword";
+      if (mode === "hybrid") {
         const response = await searchHybrid(searchQuery.trim(), currentPath, 50);
         setHybridResults(response.matches);
         setKeywordResults([]);
@@ -339,21 +360,26 @@ export default function Explorer() {
           <form className="search-form" onSubmit={runSearch}>
             <label htmlFor="search-input">Search code</label>
             <div className="mode-toggle" role="group" aria-label="Search mode">
+              {hybridSearchEnabled ? (
+                <button
+                  type="button"
+                  className={searchMode === "hybrid" ? "active" : ""}
+                  onClick={() => setSearchMode("hybrid")}
+                >
+                  Hybrid
+                </button>
+              ) : null}
               <button
                 type="button"
-                className={searchMode === "hybrid" ? "active" : ""}
-                onClick={() => setSearchMode("hybrid")}
-              >
-                Hybrid
-              </button>
-              <button
-                type="button"
-                className={searchMode === "keyword" ? "active" : ""}
+                className={effectiveSearchMode === "keyword" ? "active" : ""}
                 onClick={() => setSearchMode("keyword")}
               >
                 Keyword
               </button>
             </div>
+            {!hybridSearchEnabled ? (
+              <p className="subtle">Hybrid search is disabled by server configuration.</p>
+            ) : null}
             <div className="row">
               <input
                 id="search-input"
@@ -383,7 +409,7 @@ export default function Explorer() {
               </p>
             ))}
             <ul>
-              {searchMode === "keyword"
+              {effectiveSearchMode === "keyword"
                 ? keywordResults.map((match) => (
                     <li key={`${match.path}:${match.line_number}`}>
                       <button type="button" onClick={() => void openFile(match.path)}>
