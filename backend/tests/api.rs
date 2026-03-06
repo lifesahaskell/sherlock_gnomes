@@ -236,6 +236,7 @@ async fn indexed_search_requires_database_configuration() {
     assert_eq!(index_status.status(), StatusCode::SERVICE_UNAVAILABLE);
 
     let profile_create = app
+        .clone()
         .oneshot(post_request(
             "/api/profiles",
             json!({
@@ -256,6 +257,7 @@ async fn indexed_search_requires_database_configuration() {
     assert_eq!(profile_list.status(), StatusCode::SERVICE_UNAVAILABLE);
 
     let profile_update = app
+        .clone()
         .oneshot(put_request("/api/profiles/1", json!({"display_name": "Ada"})))
         .await
         .expect("send profile update request");

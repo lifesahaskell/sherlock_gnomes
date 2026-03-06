@@ -1,12 +1,12 @@
 use std::{
     env, fs,
-    path::{Component, Path, PathBuf},
+    path::{Component, Path as StdPath, PathBuf},
     sync::Arc,
 };
 
 use axum::{
     Json, Router,
-    extract::{Path, Query, State},
+    extract::{Path as PathParam, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post, put},
@@ -195,7 +195,7 @@ pub fn build_app_with_indexing_and_hybrid_toggle(
         .route("/api/index", post(start_indexing))
         .route("/api/index/status", get(index_status))
         .route("/api/profiles", get(list_profiles).post(create_profile))
-        .route("/api/profiles/:id", put(update_profile))
+        .route("/api/profiles/{id}", put(update_profile))
         .route("/api/ask", post(ask))
         .with_state(state)
         .layer(CorsLayer::permissive())
@@ -402,7 +402,7 @@ async fn list_profiles(
 }
 
 async fn update_profile(
-    Path(profile_id): Path<i64>,
+    PathParam(profile_id): PathParam<i64>,
     State(state): State<AppState>,
     Json(request): Json<UpdateProfileRequest>,
 ) -> Result<Json<UserProfile>, AppError> {
@@ -576,7 +576,7 @@ fn is_likely_email(value: &str) -> bool {
 
 fn validate_filter_path(path: Option<&str>) -> Result<(), AppError> {
     if let Some(value) = path {
-        let relative = Path::new(value);
+        let relative = StdPath::new(value);
         if relative.is_absolute() || contains_parent_dir(relative) {
             return Err(AppError::bad_request(
                 "path must be relative and cannot contain parent traversal",
@@ -587,11 +587,11 @@ fn validate_filter_path(path: Option<&str>) -> Result<(), AppError> {
     Ok(())
 }
 
-fn resolve_within_root(root: &Path, requested: Option<&str>) -> Result<PathBuf, AppError> {
+fn resolve_within_root(root: &StdPath, requested: Option<&str>) -> Result<PathBuf, AppError> {
     match requested {
         None => Ok(root.to_path_buf()),
         Some(path) => {
-            let relative = Path::new(path);
+            let relative = StdPath::new(path);
             if relative.is_absolute() || contains_parent_dir(relative) {
                 return Err(AppError::bad_request(
                     "path must be relative and cannot contain parent traversal",
@@ -609,7 +609,7 @@ fn resolve_within_root(root: &Path, requested: Option<&str>) -> Result<PathBuf, 
     }
 }
 
-fn contains_parent_dir(path: &Path) -> bool {
+fn contains_parent_dir(path: &StdPath) -> bool {
     path.components()
         .any(|component| matches!(component, Component::ParentDir))
 }
@@ -623,7 +623,7 @@ fn parse_env_bool(value: &str) -> Option<bool> {
     }
 }
 
-fn to_relative_path(root: &Path, full_path: &Path) -> Result<String, AppError> {
+fn to_relative_path(root: &StdPath, full_path: &StdPath) -> Result<String, AppError> {
     full_path
         .strip_prefix(root)
         .map(|path| path.to_string_lossy().to_string())
@@ -693,9 +693,9 @@ mod tests {
 
     #[test]
     fn parent_dir_detection_works() {
-        assert!(contains_parent_dir(Path::new("../secret.txt")));
-        assert!(contains_parent_dir(Path::new("src/../main.rs")));
-        assert!(!contains_parent_dir(Path::new("src/main.rs")));
+        assert!(contains_parent_dir(StdPath::new("../secret.txt")));
+        assert!(contains_parent_dir(StdPath::new("src/../main.rs")));
+        assert!(!contains_parent_dir(StdPath::new("src/main.rs")));
     }
 
     #[test]

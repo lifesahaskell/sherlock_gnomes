@@ -1076,6 +1076,8 @@ fn apply_enqueue(queue: &mut QueueState, job_id: Uuid) -> EnqueueDecision {
 }
 
 #[doc(hidden)]
+// Keep this function in the library crate so the standalone fuzz target in backend/fuzz
+// can call it directly without introducing fuzzing dependencies into the runtime backend.
 pub fn fuzz_parse_semantic_blocks(path: &str, content: &str) {
     let _ = chunking::parse_semantic_blocks(path, content);
 }
