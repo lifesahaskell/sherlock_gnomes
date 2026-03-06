@@ -1,5 +1,6 @@
 import "./globals.css";
 import type { Metadata } from "next";
+import TopNav from "@/components/top-nav";
 
 export const metadata: Metadata = {
   title: "Sherlock Gnomes Explorer",
@@ -11,7 +12,10 @@ export default function RootLayout({
 }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <TopNav />
+        <div className="app-content">{children}</div>
+      </body>
     </html>
   );
 }
