@@ -1,4 +1,0 @@
-interface:
-  display_name: "Sherlock Rust Backend"
-  short_description: "Maintain Axum/SQLx backend for Sherlock Gnomes."
-  default_prompt: "Use this skill when editing backend Rust APIs, indexing, SQLx migrations, and backend tests."

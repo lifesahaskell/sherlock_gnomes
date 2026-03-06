@@ -1,4 +1,0 @@
-interface:
-  display_name: "Sherlock TDD"
-  short_description: "Apply red-green-refactor loops in this repo."
-  default_prompt: "Use this skill when implementing fixes/features by writing failing tests first, then minimal code changes, then refactoring."

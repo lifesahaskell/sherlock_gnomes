@@ -1,4 +1,0 @@
-interface:
-  display_name: "Sherlock Compose Ops"
-  short_description: "Operate Docker Compose and local dev workflows."
-  default_prompt: "Use this skill when running stack services, environment setup, indexing workflows, and CI checks."
