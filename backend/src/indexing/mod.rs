@@ -281,10 +281,7 @@ impl IndexingService {
         .await
         .map_err(|error| ProfileError::Message(format!("failed to list user profiles: {error}")))?;
 
-        Ok(rows
-            .into_iter()
-            .map(user_profile_from_row)
-            .collect())
+        Ok(rows.into_iter().map(user_profile_from_row).collect())
     }
 
     pub async fn update_profile(

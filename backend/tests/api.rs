@@ -258,7 +258,10 @@ async fn indexed_search_requires_database_configuration() {
 
     let profile_update = app
         .clone()
-        .oneshot(put_request("/api/profiles/1", json!({"display_name": "Ada"})))
+        .oneshot(put_request(
+            "/api/profiles/1",
+            json!({"display_name": "Ada"}),
+        ))
         .await
         .expect("send profile update request");
     assert_eq!(profile_update.status(), StatusCode::SERVICE_UNAVAILABLE);
@@ -460,15 +463,15 @@ async fn list_profiles_returns_created_profiles() {
 
     app.clone()
         .oneshot(post_request(
-        "/api/profiles",
-        json!({
-            "display_name": "Ada Lovelace",
-            "email": "ada@example.com",
-            "bio": "Pioneer"
-        }),
-    ))
-    .await
-    .expect("send first profile request");
+            "/api/profiles",
+            json!({
+                "display_name": "Ada Lovelace",
+                "email": "ada@example.com",
+                "bio": "Pioneer"
+            }),
+        ))
+        .await
+        .expect("send first profile request");
 
     app.clone()
         .oneshot(post_request(
@@ -562,7 +565,10 @@ async fn update_profile_applies_edits_and_rejects_nonexistent_profile() {
     assert_eq!(updated_payload["bio"], "Analytical engine");
 
     let missing = app
-        .oneshot(put_request("/api/profiles/9999", json!({"display_name": "Missing"})))
+        .oneshot(put_request(
+            "/api/profiles/9999",
+            json!({"display_name": "Missing"}),
+        ))
         .await
         .expect("send missing profile update request");
     assert_eq!(missing.status(), StatusCode::NOT_FOUND);

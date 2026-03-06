@@ -389,9 +389,7 @@ async fn create_profile(
     Ok((StatusCode::CREATED, Json(profile)))
 }
 
-async fn list_profiles(
-    State(state): State<AppState>,
-) -> Result<Json<Vec<UserProfile>>, AppError> {
+async fn list_profiles(State(state): State<AppState>) -> Result<Json<Vec<UserProfile>>, AppError> {
     let service = indexing_service(&state)?;
     let profiles = service
         .list_profiles()
@@ -409,7 +407,12 @@ async fn update_profile(
     let (display_name, email, bio) = validate_update_profile_request(request)?;
     let service = indexing_service(&state)?;
     let profile = service
-        .update_profile(profile_id, display_name.as_deref(), email.as_deref(), bio.as_deref())
+        .update_profile(
+            profile_id,
+            display_name.as_deref(),
+            email.as_deref(),
+            bio.as_deref(),
+        )
         .await
         .map_err(app_error_from_profile)?;
 
@@ -515,9 +518,11 @@ fn validate_create_profile_request(
     Ok((display_name.to_string(), email, bio))
 }
 
+type ProfileUpdateFields = (Option<String>, Option<String>, Option<String>);
+
 fn validate_update_profile_request(
     request: UpdateProfileRequest,
-) -> Result<(Option<String>, Option<String>, Option<String>), AppError> {
+) -> Result<ProfileUpdateFields, AppError> {
     let mut display_name = None;
     let mut email = None;
     let mut bio = None;

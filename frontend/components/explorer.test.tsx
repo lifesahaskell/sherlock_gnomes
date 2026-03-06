@@ -48,7 +48,7 @@ describe("Explorer", () => {
       last_completed_job: null
     });
     mockedCreateUserProfile.mockResolvedValue({
-      id: 1,
+      id: 3,
       display_name: "Ada Lovelace",
       email: "ada@example.com",
       bio: "Pioneer",
@@ -231,10 +231,13 @@ describe("Explorer", () => {
       });
     });
 
-    expect(screen.getByText("Latest Profile")).toBeInTheDocument();
-    expect(screen.getByText("Ada Lovelace")).toBeInTheDocument();
-    expect(screen.getByText(/\(ada@example\.com\)/)).toBeInTheDocument();
-    expect(screen.getByText("Pioneer")).toBeInTheDocument();
+    const latestProfileSection = screen
+      .getByText("Latest Profile")
+      .closest("section") as HTMLElement;
+    expect(latestProfileSection).toBeInTheDocument();
+    expect(within(latestProfileSection).getByText("Ada Lovelace")).toBeInTheDocument();
+    expect(within(latestProfileSection).getByText(/\(ada@example\.com\)/)).toBeInTheDocument();
+    expect(within(latestProfileSection).getByText("Pioneer")).toBeInTheDocument();
   });
 
   it("renders profile list from API response", async () => {
