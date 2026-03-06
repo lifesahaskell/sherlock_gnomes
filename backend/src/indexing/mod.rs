@@ -125,6 +125,7 @@ pub enum SearchError {
 #[derive(Debug)]
 pub enum ProfileError {
     DuplicateEmail,
+    NotFound,
     Message(String),
 }
 
@@ -143,6 +144,7 @@ impl ProfileError {
     pub fn message(self) -> String {
         match self {
             Self::DuplicateEmail => "a profile with this email already exists".to_string(),
+            Self::NotFound => "profile not found".to_string(),
             Self::Message(message) => message,
         }
     }
@@ -264,6 +266,59 @@ impl IndexingService {
             _ => ProfileError::Message(format!("failed to create user profile: {error}")),
         })?;
 
+        Ok(user_profile_from_row(row))
+    }
+
+    pub async fn list_profiles(&self) -> Result<Vec<UserProfile>, ProfileError> {
+        let rows = sqlx::query(
+            "
+            SELECT id, display_name, email, bio, created_at
+            FROM user_profiles
+            ORDER BY created_at DESC, id DESC
+            ",
+        )
+        .fetch_all(&self.inner.pool)
+        .await
+        .map_err(|error| ProfileError::Message(format!("failed to list user profiles: {error}")))?;
+
+        Ok(rows
+            .into_iter()
+            .map(user_profile_from_row)
+            .collect())
+    }
+
+    pub async fn update_profile(
+        &self,
+        id: i64,
+        display_name: Option<&str>,
+        email: Option<&str>,
+        bio: Option<&str>,
+    ) -> Result<UserProfile, ProfileError> {
+        let row = sqlx::query(
+            "
+            UPDATE user_profiles
+            SET
+                display_name = COALESCE($2, display_name),
+                email = COALESCE($3, email),
+                bio = COALESCE($4, bio)
+            WHERE id = $1
+            RETURNING id, display_name, email, bio, created_at
+            ",
+        )
+        .bind(id)
+        .bind(display_name)
+        .bind(email)
+        .bind(bio)
+        .fetch_optional(&self.inner.pool)
+        .await
+        .map_err(|error| match &error {
+            sqlx::Error::Database(db_error) if db_error.code().as_deref() == Some("23505") => {
+                ProfileError::DuplicateEmail
+            }
+            _ => ProfileError::Message(format!("failed to update user profile: {error}")),
+        })?;
+
+        let row = row.ok_or(ProfileError::NotFound)?;
         Ok(user_profile_from_row(row))
     }
 

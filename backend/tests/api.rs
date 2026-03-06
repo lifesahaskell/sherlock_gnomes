@@ -37,6 +37,15 @@ fn post_request(uri: &str, payload: Value) -> Request<Body> {
         .expect("build POST request")
 }
 
+fn put_request(uri: &str, payload: Value) -> Request<Body> {
+    Request::builder()
+        .method("PUT")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .body(Body::from(payload.to_string()))
+        .expect("build PUT request")
+}
+
 #[tokio::test]
 async fn health_returns_ok_and_root() {
     let temp = tempdir().expect("create temp dir");
@@ -238,6 +247,19 @@ async fn indexed_search_requires_database_configuration() {
         .await
         .expect("send profile create request");
     assert_eq!(profile_create.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let profile_list = app
+        .clone()
+        .oneshot(get_request("/api/profiles"))
+        .await
+        .expect("send profile list request");
+    assert_eq!(profile_list.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let profile_update = app
+        .oneshot(put_request("/api/profiles/1", json!({"display_name": "Ada"})))
+        .await
+        .expect("send profile update request");
+    assert_eq!(profile_update.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
 
 #[tokio::test]
@@ -399,6 +421,149 @@ async fn create_profile_rejects_invalid_payload() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let payload = body_json(response.into_body()).await;
     assert_eq!(payload["error"], "display_name cannot be empty");
+}
+
+#[tokio::test]
+#[serial]
+async fn list_profiles_returns_created_profiles() {
+    let Some(test_database_url) = std::env::var("TEST_DATABASE_URL").ok() else {
+        return;
+    };
+
+    let temp = tempdir().expect("create temp dir");
+    let root = temp.path().canonicalize().expect("canonicalize root");
+
+    // SAFETY: This test opts into environment mutation and is gated by TEST_DATABASE_URL.
+    unsafe {
+        std::env::set_var("DATABASE_URL", &test_database_url);
+        std::env::set_var("EMBEDDING_PROVIDER", "mock");
+    }
+
+    let indexing = load_indexing_from_env(Arc::new(root.clone()))
+        .await
+        .expect("load indexing from env")
+        .expect("indexing service should be configured");
+
+    let pool = PgPool::connect(&test_database_url)
+        .await
+        .expect("connect test database");
+    sqlx::query(
+        "TRUNCATE TABLE semantic_blocks, indexed_files, index_jobs, user_profiles RESTART IDENTITY",
+    )
+    .execute(&pool)
+    .await
+    .expect("truncate profile and index tables");
+
+    let app = build_app_with_indexing(root, Some(indexing));
+
+    app.clone()
+        .oneshot(post_request(
+        "/api/profiles",
+        json!({
+            "display_name": "Ada Lovelace",
+            "email": "ada@example.com",
+            "bio": "Pioneer"
+        }),
+    ))
+    .await
+    .expect("send first profile request");
+
+    app.clone()
+        .oneshot(post_request(
+            "/api/profiles",
+            json!({
+                "display_name": "Grace Hopper",
+                "email": "grace@example.com",
+                "bio": "Compiler"
+            }),
+        ))
+        .await
+        .expect("send second profile request");
+
+    let response = app
+        .oneshot(get_request("/api/profiles"))
+        .await
+        .expect("send profile list request");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let payload = body_json(response.into_body()).await;
+    let profiles = payload.as_array().expect("profiles array");
+    assert_eq!(profiles.len(), 2);
+    assert_eq!(profiles[0]["display_name"], "Grace Hopper");
+    assert_eq!(profiles[1]["display_name"], "Ada Lovelace");
+}
+
+#[tokio::test]
+#[serial]
+async fn update_profile_applies_edits_and_rejects_nonexistent_profile() {
+    let Some(test_database_url) = std::env::var("TEST_DATABASE_URL").ok() else {
+        return;
+    };
+
+    let temp = tempdir().expect("create temp dir");
+    let root = temp.path().canonicalize().expect("canonicalize root");
+
+    // SAFETY: This test opts into environment mutation and is gated by TEST_DATABASE_URL.
+    unsafe {
+        std::env::set_var("DATABASE_URL", &test_database_url);
+        std::env::set_var("EMBEDDING_PROVIDER", "mock");
+    }
+
+    let indexing = load_indexing_from_env(Arc::new(root.clone()))
+        .await
+        .expect("load indexing from env")
+        .expect("indexing service should be configured");
+
+    let pool = PgPool::connect(&test_database_url)
+        .await
+        .expect("connect test database");
+    sqlx::query(
+        "TRUNCATE TABLE semantic_blocks, indexed_files, index_jobs, user_profiles RESTART IDENTITY",
+    )
+    .execute(&pool)
+    .await
+    .expect("truncate profile and index tables");
+
+    let app = build_app_with_indexing(root, Some(indexing));
+
+    let created = app
+        .clone()
+        .oneshot(post_request(
+            "/api/profiles",
+            json!({
+                "display_name": "Ada Lovelace",
+                "email": "ada@example.com",
+                "bio": "Pioneer"
+            }),
+        ))
+        .await
+        .expect("send create profile request");
+    let created_payload = body_json(created.into_body()).await;
+    let id = created_payload["id"].as_i64().expect("profile id");
+
+    let updated = app
+        .clone()
+        .oneshot(put_request(
+            &format!("/api/profiles/{id}"),
+            json!({
+                "display_name": "Ada L.",
+                "email": "ada.lovelace@example.com",
+                "bio": "Analytical engine"
+            }),
+        ))
+        .await
+        .expect("send profile update request");
+    assert_eq!(updated.status(), StatusCode::OK);
+    let updated_payload = body_json(updated.into_body()).await;
+    assert_eq!(updated_payload["display_name"], "Ada L.");
+    assert_eq!(updated_payload["email"], "ada.lovelace@example.com");
+    assert_eq!(updated_payload["bio"], "Analytical engine");
+
+    let missing = app
+        .oneshot(put_request("/api/profiles/9999", json!({"display_name": "Missing"})))
+        .await
+        .expect("send missing profile update request");
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

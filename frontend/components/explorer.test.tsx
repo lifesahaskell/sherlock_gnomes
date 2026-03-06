@@ -8,12 +8,14 @@ import * as api from "@/lib/api";
 vi.mock("@/lib/api", () => ({
   askCodebase: vi.fn(),
   createUserProfile: vi.fn(),
+  getUserProfiles: vi.fn(),
   getFile: vi.fn(),
   getHealth: vi.fn(),
   getIndexStatus: vi.fn(),
   getTree: vi.fn(),
   searchCode: vi.fn(),
   searchHybrid: vi.fn(),
+  updateUserProfile: vi.fn(),
   startIndexing: vi.fn()
 }));
 
@@ -21,7 +23,9 @@ const mockedGetTree = vi.mocked(api.getTree);
 const mockedGetFile = vi.mocked(api.getFile);
 const mockedGetHealth = vi.mocked(api.getHealth);
 const mockedGetIndexStatus = vi.mocked(api.getIndexStatus);
+const mockedGetUserProfiles = vi.mocked(api.getUserProfiles);
 const mockedCreateUserProfile = vi.mocked(api.createUserProfile);
+const mockedUpdateUserProfile = vi.mocked(api.updateUserProfile);
 const mockedSearchCode = vi.mocked(api.searchCode);
 const mockedSearchHybrid = vi.mocked(api.searchHybrid);
 const mockedStartIndexing = vi.mocked(api.startIndexing);
@@ -48,6 +52,29 @@ describe("Explorer", () => {
       display_name: "Ada Lovelace",
       email: "ada@example.com",
       bio: "Pioneer",
+      created_at: "2026-03-06T00:00:00Z"
+    });
+    mockedGetUserProfiles.mockResolvedValue([
+      {
+        id: 1,
+        display_name: "Ada Lovelace",
+        email: "ada@example.com",
+        bio: "Pioneer",
+        created_at: "2026-03-06T00:00:00Z"
+      },
+      {
+        id: 2,
+        display_name: "Grace Hopper",
+        email: "grace@example.com",
+        bio: "Compiler",
+        created_at: "2026-03-06T00:00:00Z"
+      }
+    ]);
+    mockedUpdateUserProfile.mockResolvedValue({
+      id: 2,
+      display_name: "Grace Hopper",
+      email: "grace.hopper@example.com",
+      bio: "Compiler",
       created_at: "2026-03-06T00:00:00Z"
     });
     mockedSearchCode.mockResolvedValue({ query: "alpha", matches: [] });
@@ -208,6 +235,59 @@ describe("Explorer", () => {
     expect(screen.getByText("Ada Lovelace")).toBeInTheDocument();
     expect(screen.getByText(/\(ada@example\.com\)/)).toBeInTheDocument();
     expect(screen.getByText("Pioneer")).toBeInTheDocument();
+  });
+
+  it("renders profile list from API response", async () => {
+    render(<Explorer />);
+
+    await waitFor(() => {
+      expect(mockedGetUserProfiles).toHaveBeenCalledTimes(1);
+    });
+
+    expect(screen.getByText("Ada Lovelace")).toBeInTheDocument();
+    expect(screen.getByText("grace@example.com")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Edit" }).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("edits an existing profile", async () => {
+    const user = userEvent.setup();
+
+    mockedGetUserProfiles.mockResolvedValue([
+      {
+        id: 2,
+        display_name: "Grace Hopper",
+        email: "grace@example.com",
+        bio: "Compiler",
+        created_at: "2026-03-06T00:00:00Z"
+      }
+    ]);
+    mockedUpdateUserProfile.mockResolvedValue({
+      id: 2,
+      display_name: "Grace Hopper",
+      email: "grace.hopper@example.com",
+      bio: "Compiler",
+      created_at: "2026-03-06T00:00:00Z"
+    });
+
+    render(<Explorer />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Edit" })).toBeInTheDocument();
+    });
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+
+    await user.clear(screen.getByLabelText("Profile email"));
+    await user.type(screen.getByLabelText("Profile email"), " grace.hopper@example.com ");
+
+    await user.click(screen.getByRole("button", { name: "Save Profile" }));
+
+    await waitFor(() => {
+      expect(mockedUpdateUserProfile).toHaveBeenCalledWith(2, {
+        display_name: "Grace Hopper",
+        email: "grace.hopper@example.com",
+        bio: "Compiler"
+      });
+    });
   });
 
   it("validates question and context requirements before asking", async () => {

@@ -77,6 +77,12 @@ export type UserProfile = {
   created_at: string;
 };
 
+export type UpdateUserProfileInput = {
+  display_name?: string;
+  email?: string;
+  bio?: string;
+};
+
 export type HealthResponse = {
   status: string;
   root_dir: string;
@@ -177,6 +183,20 @@ export function createUserProfile(input: {
 }): Promise<UserProfile> {
   return fetchJson<UserProfile>("/api/profiles", {
     method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export function getUserProfiles(): Promise<UserProfile[]> {
+  return fetchJson<UserProfile[]>("/api/profiles");
+}
+
+export function updateUserProfile(
+  id: number,
+  input: UpdateUserProfileInput
+): Promise<UserProfile> {
+  return fetchJson<UserProfile>(`/api/profiles/${id}`, {
+    method: "PUT",
     body: JSON.stringify(input)
   });
 }

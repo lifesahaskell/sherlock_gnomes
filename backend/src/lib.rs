@@ -6,10 +6,10 @@ use std::{
 
 use axum::{
     Json, Router,
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
@@ -116,6 +116,13 @@ struct CreateProfileRequest {
     bio: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct UpdateProfileRequest {
+    display_name: Option<String>,
+    email: Option<String>,
+    bio: Option<String>,
+}
+
 #[derive(Serialize)]
 struct AskResponse {
     guidance: String,
@@ -187,7 +194,8 @@ pub fn build_app_with_indexing_and_hybrid_toggle(
         .route("/api/search/hybrid", get(search_hybrid))
         .route("/api/index", post(start_indexing))
         .route("/api/index/status", get(index_status))
-        .route("/api/profiles", post(create_profile))
+        .route("/api/profiles", get(list_profiles).post(create_profile))
+        .route("/api/profiles/:id", put(update_profile))
         .route("/api/ask", post(ask))
         .with_state(state)
         .layer(CorsLayer::permissive())
@@ -381,6 +389,33 @@ async fn create_profile(
     Ok((StatusCode::CREATED, Json(profile)))
 }
 
+async fn list_profiles(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<UserProfile>>, AppError> {
+    let service = indexing_service(&state)?;
+    let profiles = service
+        .list_profiles()
+        .await
+        .map_err(app_error_from_profile)?;
+
+    Ok(Json(profiles))
+}
+
+async fn update_profile(
+    Path(profile_id): Path<i64>,
+    State(state): State<AppState>,
+    Json(request): Json<UpdateProfileRequest>,
+) -> Result<Json<UserProfile>, AppError> {
+    let (display_name, email, bio) = validate_update_profile_request(request)?;
+    let service = indexing_service(&state)?;
+    let profile = service
+        .update_profile(profile_id, display_name.as_deref(), email.as_deref(), bio.as_deref())
+        .await
+        .map_err(app_error_from_profile)?;
+
+    Ok(Json(profile))
+}
+
 async fn ask(
     State(state): State<AppState>,
     Json(request): Json<AskRequest>,
@@ -446,6 +481,7 @@ fn app_error_from_search(error: SearchError) -> AppError {
 fn app_error_from_profile(error: ProfileError) -> AppError {
     match error {
         ProfileError::DuplicateEmail => AppError::conflict(error.message()),
+        ProfileError::NotFound => AppError::not_found(error.message()),
         ProfileError::Message(message) => AppError::internal(message),
     }
 }
@@ -477,6 +513,54 @@ fn validate_create_profile_request(
     }
 
     Ok((display_name.to_string(), email, bio))
+}
+
+fn validate_update_profile_request(
+    request: UpdateProfileRequest,
+) -> Result<(Option<String>, Option<String>, Option<String>), AppError> {
+    let mut display_name = None;
+    let mut email = None;
+    let mut bio = None;
+
+    if let Some(value) = request.display_name {
+        let normalized = value.trim();
+        if normalized.is_empty() {
+            return Err(AppError::bad_request("display_name cannot be empty"));
+        }
+        if normalized.chars().count() > 80 {
+            return Err(AppError::bad_request(
+                "display_name must be 80 characters or fewer",
+            ));
+        }
+        display_name = Some(normalized.to_string());
+    }
+
+    if let Some(value) = request.email {
+        let normalized = value.trim().to_ascii_lowercase();
+        if normalized.is_empty() {
+            return Err(AppError::bad_request("email cannot be empty"));
+        }
+        if normalized.len() > 254 || !is_likely_email(&normalized) {
+            return Err(AppError::bad_request("email must be a valid email address"));
+        }
+        email = Some(normalized);
+    }
+
+    if let Some(value) = request.bio {
+        let normalized = value.trim().to_string();
+        if normalized.chars().count() > 500 {
+            return Err(AppError::bad_request("bio must be 500 characters or fewer"));
+        }
+        bio = Some(normalized);
+    }
+
+    if display_name.is_none() && email.is_none() && bio.is_none() {
+        return Err(AppError::bad_request(
+            "at least one profile field must be provided",
+        ));
+    }
+
+    Ok((display_name, email, bio))
 }
 
 fn is_likely_email(value: &str) -> bool {

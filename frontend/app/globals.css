@@ -232,6 +232,52 @@ textarea {
   font-size: 0.88rem;
 }
 
+.profile-list {
+  display: grid;
+  gap: 0.35rem;
+  border: 1px solid var(--line);
+  border-radius: 0.7rem;
+  padding: 0.55rem;
+  background: #fff;
+}
+
+.profile-list h3 {
+  margin: 0;
+  font-size: 0.93rem;
+}
+
+.profile-list ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.profile-list li {
+  border: 1px solid var(--line);
+  border-radius: 0.62rem;
+  padding: 0.45rem;
+  display: grid;
+  gap: 0.18rem;
+}
+
+.profile-list li p {
+  margin: 0;
+  color: #334654;
+  font-size: 0.84rem;
+}
+
+.profile-list li button {
+  border: 1px solid #abc4cf;
+  background: #f2f8fb;
+  color: #234151;
+  border-radius: 0.45rem;
+  padding: 0.32rem 0.52rem;
+  justify-self: start;
+  width: fit-content;
+}
+
 .index-card {
   display: grid;
   gap: 0.45rem;

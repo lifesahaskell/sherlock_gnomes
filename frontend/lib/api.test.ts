@@ -5,10 +5,12 @@ import {
   getFile,
   getHealth,
   getIndexStatus,
+  getUserProfiles,
   getTree,
   searchCode,
   searchHybrid,
-  startIndexing
+  startIndexing,
+  updateUserProfile
 } from "@/lib/api";
 
 describe("api client", () => {
@@ -203,6 +205,72 @@ describe("api client", () => {
       "http://127.0.0.1:8787/api/profiles",
       expect.objectContaining({
         method: "POST",
+        body: JSON.stringify({
+          display_name: "Ada",
+          email: "ada@example.com",
+          bio: "Pioneer"
+        }),
+        headers: expect.objectContaining({ "Content-Type": "application/json" })
+      })
+    );
+  });
+
+  it("loads user profiles", async () => {
+    const mockFetch = vi.mocked(global.fetch);
+    mockFetch.mockResolvedValue(
+      new Response(
+        JSON.stringify([
+          {
+            id: 1,
+            display_name: "Ada",
+            email: "ada@example.com",
+            bio: "Pioneer",
+            created_at: "2026-03-06T00:00:00Z"
+          }
+        ]),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        }
+      )
+    );
+
+    const response = await getUserProfiles();
+
+    const calledUrl = new URL(String(mockFetch.mock.calls[0][0]));
+    expect(calledUrl.pathname).toBe("/api/profiles");
+    expect(Array.isArray(response)).toBe(true);
+    expect(response[0].display_name).toBe("Ada");
+  });
+
+  it("sends JSON PUT body for updateUserProfile", async () => {
+    const mockFetch = vi.mocked(global.fetch);
+    mockFetch.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: 1,
+          display_name: "Ada",
+          email: "ada@example.com",
+          bio: "Pioneer",
+          created_at: "2026-03-06T00:00:00Z"
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        }
+      )
+    );
+
+    await updateUserProfile(1, {
+      display_name: "Ada",
+      email: "ada@example.com",
+      bio: "Pioneer"
+    });
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:8787/api/profiles/1",
+      expect.objectContaining({
+        method: "PUT",
         body: JSON.stringify({
           display_name: "Ada",
           email: "ada@example.com",

@@ -9,6 +9,7 @@ import {
   SearchMatch,
   TreeEntry,
   askCodebase,
+  getUserProfiles,
   createUserProfile,
   getFile,
   getHealth,
@@ -17,6 +18,7 @@ import {
   searchCode,
   searchHybrid,
   startIndexing,
+  updateUserProfile,
   UserProfile
 } from "@/lib/api";
 
@@ -67,6 +69,8 @@ export default function Explorer() {
   const [profileEmail, setProfileEmail] = useState("");
   const [profileBio, setProfileBio] = useState("");
   const [createdProfile, setCreatedProfile] = useState<UserProfile | null>(null);
+  const [profiles, setProfiles] = useState<UserProfile[]>([]);
+  const [editingProfileId, setEditingProfileId] = useState<number | null>(null);
 
   const [indexStatus, setIndexStatus] = useState<IndexStatusResponse | null>(null);
 
@@ -93,6 +97,7 @@ export default function Explorer() {
   useEffect(() => {
     void loadTree("");
     void loadHealth();
+    void loadProfiles();
     void refreshIndexStatus(false);
   }, []);
 
@@ -128,12 +133,20 @@ export default function Explorer() {
     try {
       setBusy((prev) => ({ ...prev, profile: true }));
       setError("");
-      const profile = await createUserProfile({
-        display_name,
-        email,
-        bio
+      const request = { display_name, email, bio };
+      const profile = editingProfileId
+        ? await updateUserProfile(editingProfileId, request)
+        : await createUserProfile(request);
+
+      setProfiles((current) => {
+        if (editingProfileId) {
+          return current.map((item) => (item.id === profile.id ? profile : item));
+        }
+        return [profile, ...current];
       });
+
       setCreatedProfile(profile);
+      setEditingProfileId(null);
       setProfileName("");
       setProfileEmail("");
       setProfileBio("");
@@ -141,6 +154,29 @@ export default function Explorer() {
       setError((err as Error).message);
     } finally {
       setBusy((prev) => ({ ...prev, profile: false }));
+    }
+  }
+
+  function loadProfilesForEditing(profile: UserProfile) {
+    setEditingProfileId(profile.id);
+    setProfileName(profile.display_name);
+    setProfileEmail(profile.email);
+    setProfileBio(profile.bio);
+  }
+
+  function cancelProfileEdit() {
+    setEditingProfileId(null);
+    setProfileName("");
+    setProfileEmail("");
+    setProfileBio("");
+  }
+
+  async function loadProfiles() {
+    try {
+      const response = await getUserProfiles();
+      setProfiles(response);
+    } catch {
+      setProfiles([]);
     }
   }
 
@@ -378,7 +414,7 @@ export default function Explorer() {
 
         <aside className="card side-card">
           <form className="profile-form" onSubmit={submitProfile}>
-            <h3>Create Profile</h3>
+            <h3>{editingProfileId ? "Edit Profile" : "Create Profile"}</h3>
             <label htmlFor="profile-name-input">Profile name</label>
             <input
               id="profile-name-input"
@@ -402,8 +438,19 @@ export default function Explorer() {
               placeholder="Short introduction"
             />
             <button type="submit" disabled={busy.profile}>
-              {busy.profile ? "Creating..." : "Create Profile"}
+              {busy.profile
+                ? editingProfileId
+                  ? "Saving..."
+                  : "Creating..."
+                : editingProfileId
+                  ? "Save Profile"
+                  : "Create Profile"}
             </button>
+            {editingProfileId ? (
+              <button type="button" onClick={cancelProfileEdit} disabled={busy.profile}>
+                Cancel Edit
+              </button>
+            ) : null}
           </form>
 
           {createdProfile ? (
@@ -415,6 +462,29 @@ export default function Explorer() {
               {createdProfile.bio ? <p>{createdProfile.bio}</p> : null}
             </section>
           ) : null}
+
+          <section className="profile-list">
+            <h3>Profiles</h3>
+            {profiles.length === 0 ? <p className="subtle">No profiles yet.</p> : null}
+            <ul>
+              {profiles.map((profile) => (
+                <li key={profile.id}>
+                  <div>
+                    <strong>{profile.display_name}</strong>
+                    <p>{profile.email}</p>
+                    {profile.bio ? <p>{profile.bio}</p> : null}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => loadProfilesForEditing(profile)}
+                    disabled={busy.profile}
+                  >
+                    Edit
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </section>
 
           <section className="index-card">
             <div className="card-head">
