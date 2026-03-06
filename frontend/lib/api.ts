@@ -206,27 +206,6 @@ export function getIndexStatus(): Promise<IndexStatusResponse> {
   return fetchJson<IndexStatusResponse>("/api/index/status");
 }
 
-export function createUserProfile(input: {
-  display_name: string;
-  email: string;
-  bio?: string;
-}): Promise<UserProfile> {
-  return fetchJson<UserProfile>("/api/profiles", {
-    method: "POST",
-    body: JSON.stringify(input)
-  });
-}
-
 export function getUserProfiles(): Promise<UserProfile[]> {
   return fetchJson<UserProfile[]>("/api/profiles");
-}
-
-export function updateUserProfile(
-  id: number,
-  input: UpdateUserProfileInput
-): Promise<UserProfile> {
-  return fetchJson<UserProfile>(`/api/profiles/${id}`, {
-    method: "PUT",
-    body: JSON.stringify(input)
-  });
 }

@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   AskResponse,
@@ -10,7 +11,6 @@ import {
   TreeEntry,
   askCodebase,
   getUserProfiles,
-  createUserProfile,
   getFile,
   getHealth,
   getIndexStatus,
@@ -18,9 +18,9 @@ import {
   searchCode,
   searchHybrid,
   startIndexing,
-  updateUserProfile,
   UserProfile
 } from "@/lib/api";
+import { updateProfileAdmin } from "@/lib/profile-admin";
 
 type BusyState = {
   tree: boolean;
@@ -68,7 +68,6 @@ export default function Explorer() {
   const [profileName, setProfileName] = useState("");
   const [profileEmail, setProfileEmail] = useState("");
   const [profileBio, setProfileBio] = useState("");
-  const [createdProfile, setCreatedProfile] = useState<UserProfile | null>(null);
   const [profiles, setProfiles] = useState<UserProfile[]>([]);
   const [editingProfileId, setEditingProfileId] = useState<number | null>(null);
 
@@ -117,6 +116,11 @@ export default function Explorer() {
 
   async function submitProfile(event: FormEvent) {
     event.preventDefault();
+    if (editingProfileId === null) {
+      setError("Choose a profile to edit first.");
+      return;
+    }
+
     const display_name = profileName.trim();
     const email = profileEmail.trim();
     const bio = profileBio.trim();
@@ -134,18 +138,9 @@ export default function Explorer() {
       setBusy((prev) => ({ ...prev, profile: true }));
       setError("");
       const request = { display_name, email, bio };
-      const profile = editingProfileId
-        ? await updateUserProfile(editingProfileId, request)
-        : await createUserProfile(request);
+      const profile = await updateProfileAdmin(editingProfileId, request);
 
-      setProfiles((current) => {
-        if (editingProfileId) {
-          return current.map((item) => (item.id === profile.id ? profile : item));
-        }
-        return [profile, ...current];
-      });
-
-      setCreatedProfile(profile);
+      setProfiles((current) => current.map((item) => (item.id === profile.id ? profile : item)));
       setEditingProfileId(null);
       setProfileName("");
       setProfileEmail("");
@@ -413,54 +408,49 @@ export default function Explorer() {
         </section>
 
         <aside className="card side-card">
-          <form className="profile-form" onSubmit={submitProfile}>
-            <h3>{editingProfileId ? "Edit Profile" : "Create Profile"}</h3>
-            <label htmlFor="profile-name-input">Profile name</label>
-            <input
-              id="profile-name-input"
-              value={profileName}
-              onChange={(event) => setProfileName(event.target.value)}
-              placeholder="Ada Lovelace"
-            />
-            <label htmlFor="profile-email-input">Profile email</label>
-            <input
-              id="profile-email-input"
-              value={profileEmail}
-              onChange={(event) => setProfileEmail(event.target.value)}
-              placeholder="ada@example.com"
-              type="email"
-            />
-            <label htmlFor="profile-bio-input">Profile bio</label>
-            <textarea
-              id="profile-bio-input"
-              value={profileBio}
-              onChange={(event) => setProfileBio(event.target.value)}
-              placeholder="Short introduction"
-            />
-            <button type="submit" disabled={busy.profile}>
-              {busy.profile
-                ? editingProfileId
-                  ? "Saving..."
-                  : "Creating..."
-                : editingProfileId
-                  ? "Save Profile"
-                  : "Create Profile"}
-            </button>
-            {editingProfileId ? (
+          <section className="profile-navigation-card">
+            <h3>Profile Management</h3>
+            <p className="subtle">
+              Create new profiles on the{" "}
+              <Link href="/profile" className="inline-link">
+                Profile page
+              </Link>
+              .
+            </p>
+          </section>
+
+          {editingProfileId ? (
+            <form className="profile-form" onSubmit={submitProfile}>
+              <h3>Edit Profile</h3>
+              <label htmlFor="profile-name-input">Profile name</label>
+              <input
+                id="profile-name-input"
+                value={profileName}
+                onChange={(event) => setProfileName(event.target.value)}
+                placeholder="Ada Lovelace"
+              />
+              <label htmlFor="profile-email-input">Profile email</label>
+              <input
+                id="profile-email-input"
+                value={profileEmail}
+                onChange={(event) => setProfileEmail(event.target.value)}
+                placeholder="ada@example.com"
+                type="email"
+              />
+              <label htmlFor="profile-bio-input">Profile bio</label>
+              <textarea
+                id="profile-bio-input"
+                value={profileBio}
+                onChange={(event) => setProfileBio(event.target.value)}
+                placeholder="Short introduction"
+              />
+              <button type="submit" disabled={busy.profile}>
+                {busy.profile ? "Saving..." : "Save Profile"}
+              </button>
               <button type="button" onClick={cancelProfileEdit} disabled={busy.profile}>
                 Cancel Edit
               </button>
-            ) : null}
-          </form>
-
-          {createdProfile ? (
-            <section className="profile-output">
-              <h3>Latest Profile</h3>
-              <p>
-                <strong>{createdProfile.display_name}</strong> ({createdProfile.email})
-              </p>
-              {createdProfile.bio ? <p>{createdProfile.bio}</p> : null}
-            </section>
+            </form>
           ) : null}
 
           <section className="profile-list">

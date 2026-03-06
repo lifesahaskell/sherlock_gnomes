@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   askCodebase,
-  createUserProfile,
   getFile,
   getHealth,
   getIndexStatus,
@@ -9,8 +8,7 @@ import {
   getTree,
   searchCode,
   searchHybrid,
-  startIndexing,
-  updateUserProfile
+  startIndexing
 } from "@/lib/api";
 
 describe("api client", () => {
@@ -186,46 +184,6 @@ describe("api client", () => {
     expect(calledUrl.pathname).toBe("/api/index/status");
   });
 
-  it("sends JSON POST body for createUserProfile", async () => {
-    const mockFetch = vi.mocked(global.fetch);
-    mockFetch.mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          id: 1,
-          display_name: "Ada",
-          email: "ada@example.com",
-          bio: "Pioneer",
-          created_at: "2026-03-06T00:00:00Z"
-        }),
-        {
-          status: 201,
-          headers: { "Content-Type": "application/json" }
-        }
-      )
-    );
-
-    await createUserProfile({
-      display_name: "Ada",
-      email: "ada@example.com",
-      bio: "Pioneer"
-    });
-
-    const calledUrlValue = mockFetch.mock.calls[0][0] as string;
-    const calledOptions = mockFetch.mock.calls[0][1] as RequestInit;
-    expect(calledUrlValue).toBe("http://127.0.0.1:8787/api/profiles");
-    expect(calledOptions.method).toBe("POST");
-    expect(calledOptions.body).toBe(
-      JSON.stringify({
-        display_name: "Ada",
-        email: "ada@example.com",
-        bio: "Pioneer"
-      })
-    );
-    const headers = new Headers(calledOptions.headers as HeadersInit | undefined);
-    expect(headers.get("Content-Type")).toBe("application/json");
-    expect(headers.get("X-API-Key")).toBe("frontend-read-key");
-  });
-
   it("loads user profiles", async () => {
     const mockFetch = vi.mocked(global.fetch);
     mockFetch.mockResolvedValue(
@@ -252,46 +210,6 @@ describe("api client", () => {
     expect(calledUrl.pathname).toBe("/api/profiles");
     expect(Array.isArray(response)).toBe(true);
     expect(response[0].display_name).toBe("Ada");
-  });
-
-  it("sends JSON PUT body for updateUserProfile", async () => {
-    const mockFetch = vi.mocked(global.fetch);
-    mockFetch.mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          id: 1,
-          display_name: "Ada",
-          email: "ada@example.com",
-          bio: "Pioneer",
-          created_at: "2026-03-06T00:00:00Z"
-        }),
-        {
-          status: 200,
-          headers: { "Content-Type": "application/json" }
-        }
-      )
-    );
-
-    await updateUserProfile(1, {
-      display_name: "Ada",
-      email: "ada@example.com",
-      bio: "Pioneer"
-    });
-
-    const calledUrlValue = mockFetch.mock.calls[0][0] as string;
-    const calledOptions = mockFetch.mock.calls[0][1] as RequestInit;
-    expect(calledUrlValue).toBe("http://127.0.0.1:8787/api/profiles/1");
-    expect(calledOptions.method).toBe("PUT");
-    expect(calledOptions.body).toBe(
-      JSON.stringify({
-        display_name: "Ada",
-        email: "ada@example.com",
-        bio: "Pioneer"
-      })
-    );
-    const headers = new Headers(calledOptions.headers as HeadersInit | undefined);
-    expect(headers.get("Content-Type")).toBe("application/json");
-    expect(headers.get("X-API-Key")).toBe("frontend-read-key");
   });
 
   it("throws backend error message when request is not ok", async () => {

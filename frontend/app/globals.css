@@ -110,31 +110,49 @@ body {
 }
 
 .home-shell,
-.docs-shell {
+.docs-shell,
+.profile-shell {
   max-width: 1150px;
   margin: 0 auto;
   padding: 1rem;
 }
 
 .home-hero,
-.docs-card {
+.docs-card,
+.profile-page-card {
   display: grid;
   gap: 0.75rem;
   padding: 1.4rem;
 }
 
 .home-hero h1,
-.docs-card h1 {
+.docs-card h1,
+.profile-page-card h1 {
   margin: 0;
   font-size: clamp(1.6rem, 3vw, 2.35rem);
   letter-spacing: -0.02em;
 }
 
 .home-hero p,
-.docs-card p {
+.docs-card p,
+.profile-page-card p {
   margin: 0;
   color: #314655;
   max-width: 72ch;
+}
+
+.profile-page-form {
+  display: grid;
+  gap: 0.35rem;
+  border: 1px solid var(--line);
+  border-radius: 0.7rem;
+  padding: 0.7rem;
+  background: #f9fcfd;
+}
+
+.profile-page-actions {
+  display: flex;
+  justify-content: flex-start;
 }
 
 .home-actions {
@@ -350,6 +368,26 @@ textarea {
   border-radius: 0.7rem;
   padding: 0.55rem;
   background: #f9fcfd;
+}
+
+.profile-navigation-card {
+  display: grid;
+  gap: 0.35rem;
+  border: 1px solid var(--line);
+  border-radius: 0.7rem;
+  padding: 0.55rem;
+  background: #fff;
+}
+
+.profile-navigation-card h3,
+.profile-navigation-card p {
+  margin: 0;
+  font-size: 0.88rem;
+}
+
+.inline-link {
+  color: var(--accent);
+  font-weight: 650;
 }
 
 .profile-form h3 {

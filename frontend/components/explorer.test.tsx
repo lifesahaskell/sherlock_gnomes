@@ -4,10 +4,10 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import Explorer from "@/components/explorer";
 import * as api from "@/lib/api";
+import * as profileAdmin from "@/lib/profile-admin";
 
 vi.mock("@/lib/api", () => ({
   askCodebase: vi.fn(),
-  createUserProfile: vi.fn(),
   getUserProfiles: vi.fn(),
   getFile: vi.fn(),
   getHealth: vi.fn(),
@@ -15,8 +15,11 @@ vi.mock("@/lib/api", () => ({
   getTree: vi.fn(),
   searchCode: vi.fn(),
   searchHybrid: vi.fn(),
-  updateUserProfile: vi.fn(),
   startIndexing: vi.fn()
+}));
+
+vi.mock("@/lib/profile-admin", () => ({
+  updateProfileAdmin: vi.fn()
 }));
 
 const mockedGetTree = vi.mocked(api.getTree);
@@ -24,12 +27,11 @@ const mockedGetFile = vi.mocked(api.getFile);
 const mockedGetHealth = vi.mocked(api.getHealth);
 const mockedGetIndexStatus = vi.mocked(api.getIndexStatus);
 const mockedGetUserProfiles = vi.mocked(api.getUserProfiles);
-const mockedCreateUserProfile = vi.mocked(api.createUserProfile);
-const mockedUpdateUserProfile = vi.mocked(api.updateUserProfile);
 const mockedSearchCode = vi.mocked(api.searchCode);
 const mockedSearchHybrid = vi.mocked(api.searchHybrid);
 const mockedStartIndexing = vi.mocked(api.startIndexing);
 const mockedAskCodebase = vi.mocked(api.askCodebase);
+const mockedUpdateProfileAdmin = vi.mocked(profileAdmin.updateProfileAdmin);
 
 describe("Explorer", () => {
   beforeEach(() => {
@@ -47,13 +49,6 @@ describe("Explorer", () => {
       pending: false,
       last_completed_job: null
     });
-    mockedCreateUserProfile.mockResolvedValue({
-      id: 3,
-      display_name: "Ada Lovelace",
-      email: "ada@example.com",
-      bio: "Pioneer",
-      created_at: "2026-03-06T00:00:00Z"
-    });
     mockedGetUserProfiles.mockResolvedValue([
       {
         id: 1,
@@ -70,7 +65,7 @@ describe("Explorer", () => {
         created_at: "2026-03-06T00:00:00Z"
       }
     ]);
-    mockedUpdateUserProfile.mockResolvedValue({
+    mockedUpdateProfileAdmin.mockResolvedValue({
       id: 2,
       display_name: "Grace Hopper",
       email: "grace.hopper@example.com",
@@ -213,33 +208,6 @@ describe("Explorer", () => {
     });
   });
 
-  it("creates a user profile and renders the created profile summary", async () => {
-    const user = userEvent.setup();
-
-    render(<Explorer />);
-
-    await user.type(screen.getByLabelText("Profile name"), " Ada Lovelace ");
-    await user.type(screen.getByLabelText("Profile email"), " ADA@EXAMPLE.COM ");
-    await user.type(screen.getByLabelText("Profile bio"), " Pioneer ");
-    await user.click(screen.getByRole("button", { name: "Create Profile" }));
-
-    await waitFor(() => {
-      expect(mockedCreateUserProfile).toHaveBeenCalledWith({
-        display_name: "Ada Lovelace",
-        email: "ADA@EXAMPLE.COM",
-        bio: "Pioneer"
-      });
-    });
-
-    const latestProfileSection = screen
-      .getByText("Latest Profile")
-      .closest("section") as HTMLElement;
-    expect(latestProfileSection).toBeInTheDocument();
-    expect(within(latestProfileSection).getByText("Ada Lovelace")).toBeInTheDocument();
-    expect(within(latestProfileSection).getByText(/\(ada@example\.com\)/)).toBeInTheDocument();
-    expect(within(latestProfileSection).getByText("Pioneer")).toBeInTheDocument();
-  });
-
   it("renders profile list from API response", async () => {
     render(<Explorer />);
 
@@ -264,7 +232,7 @@ describe("Explorer", () => {
         created_at: "2026-03-06T00:00:00Z"
       }
     ]);
-    mockedUpdateUserProfile.mockResolvedValue({
+    mockedUpdateProfileAdmin.mockResolvedValue({
       id: 2,
       display_name: "Grace Hopper",
       email: "grace.hopper@example.com",
@@ -285,12 +253,19 @@ describe("Explorer", () => {
     await user.click(screen.getByRole("button", { name: "Save Profile" }));
 
     await waitFor(() => {
-      expect(mockedUpdateUserProfile).toHaveBeenCalledWith(2, {
+      expect(mockedUpdateProfileAdmin).toHaveBeenCalledWith(2, {
         display_name: "Grace Hopper",
         email: "grace.hopper@example.com",
         bio: "Compiler"
       });
     });
+  });
+
+  it("does not render create profile controls in explorer", () => {
+    render(<Explorer />);
+
+    expect(screen.queryByRole("button", { name: "Create Profile" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Profile page" })).toHaveAttribute("href", "/profile");
   });
 
   it("validates question and context requirements before asking", async () => {

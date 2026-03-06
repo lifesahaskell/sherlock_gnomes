@@ -3,7 +3,7 @@
 Monorepo scaffold for a local codebase explorer with:
 
 - `backend/`: Rust `axum` API for directory browsing, AI context assembly, repo indexing, and hybrid search.
-- `frontend/`: Next.js app router UI for tree navigation, file viewing, indexing controls, search, and "ask with selected files".
+- `frontend/`: Next.js app router UI for tree navigation, file viewing, indexing controls, search, "ask with selected files", and profile management.
 
 ## Project layout
 
@@ -48,6 +48,7 @@ Authentication:
 - All `/api/*` routes require credentials by default (`EXPLORER_AUTH_DISABLED=false`).
 - Send credentials using `X-API-Key: <key>` (preferred) or `Authorization: Bearer <key>`.
 - Read endpoints accept read/admin keys; admin endpoints (`POST /api/index`, `POST/PUT /api/profiles*`) require the admin key.
+- Frontend profile writes are sent through same-origin proxy routes (`/api/internal/profiles*`) that attach the admin key server-side.
 
 Common auth/abuse status codes:
 
@@ -117,6 +118,7 @@ cd frontend
 npm install
 NEXT_PUBLIC_API_BASE=http://127.0.0.1:8787 \
 NEXT_PUBLIC_EXPLORER_READ_API_KEY=dev-read-key \
+EXPLORER_BACKEND_API_BASE=http://127.0.0.1:8787 \
 npm run dev
 ```
 
@@ -167,6 +169,7 @@ NEXT_PUBLIC_API_BASE=http://localhost:8787 \
 NEXT_PUBLIC_EXPLORER_READ_API_KEY=your_read_api_key \
 EXPLORER_READ_API_KEY=your_read_api_key \
 EXPLORER_ADMIN_API_KEY=your_admin_api_key \
+EXPLORER_BACKEND_API_BASE=http://backend:8787 \
 OPENAI_API_KEY=your_key_here \
 EMBEDDING_PROVIDER=openai \
 docker compose up --build -d

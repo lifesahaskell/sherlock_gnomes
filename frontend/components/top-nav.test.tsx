@@ -15,7 +15,7 @@ describe("TopNav", () => {
     mockedUsePathname.mockReturnValue("/");
   });
 
-  it("renders Home, Explorer, and Docs links", () => {
+  it("renders Home, Explorer, Docs, and Profile links", () => {
     render(<TopNav />);
 
     expect(screen.getByRole("link", { name: "Home" })).toHaveAttribute("href", "/");
@@ -24,6 +24,7 @@ describe("TopNav", () => {
       "/explorer"
     );
     expect(screen.getByRole("link", { name: "Docs" })).toHaveAttribute("href", "/docs");
+    expect(screen.getByRole("link", { name: "Profile" })).toHaveAttribute("href", "/profile");
   });
 
   it("marks active link from pathname", () => {
@@ -42,5 +43,14 @@ describe("TopNav", () => {
     render(<TopNav />);
 
     expect(screen.getByRole("link", { name: "Docs" })).toHaveClass("active");
+  });
+
+  it("marks profile route as active", () => {
+    mockedUsePathname.mockReturnValue("/profile");
+
+    render(<TopNav />);
+
+    expect(screen.getByRole("link", { name: "Profile" })).toHaveClass("active");
+    expect(screen.getByRole("link", { name: "Explorer" })).not.toHaveClass("active");
   });
 });

@@ -11,7 +11,8 @@ type NavItem = {
 const NAV_ITEMS: NavItem[] = [
   { href: "/", label: "Home" },
   { href: "/explorer", label: "Explorer" },
-  { href: "/docs", label: "Docs" }
+  { href: "/docs", label: "Docs" },
+  { href: "/profile", label: "Profile" }
 ];
 
 function isActive(pathname: string, href: string): boolean {

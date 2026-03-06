@@ -580,6 +580,13 @@ impl IndexingService {
                     content_hash,
                     updated_at
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+                ON CONFLICT (path, start_line, end_line)
+                DO UPDATE SET
+                    content = EXCLUDED.content,
+                    snippet = EXCLUDED.snippet,
+                    embedding = EXCLUDED.embedding,
+                    content_hash = EXCLUDED.content_hash,
+                    updated_at = NOW()
                 ",
             )
             .bind(path)
