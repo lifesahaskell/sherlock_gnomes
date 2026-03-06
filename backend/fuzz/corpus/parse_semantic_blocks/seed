@@ -1,0 +1,3 @@
+0fn main() {
+    println!("seed corpus");
+}

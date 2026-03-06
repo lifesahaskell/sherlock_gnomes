@@ -1,0 +1,24 @@
+[package]
+name = "codebase-explorer-backend-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.10"
+
+[dependencies.codebase-explorer-backend]
+path = ".."
+
+[[bin]]
+name = "parse_semantic_blocks"
+path = "fuzz_targets/parse_semantic_blocks.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

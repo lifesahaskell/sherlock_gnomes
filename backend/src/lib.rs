@@ -16,6 +16,7 @@ use tower_http::cors::CorsLayer;
 
 mod indexing;
 
+pub use indexing::fuzz_parse_semantic_blocks;
 use indexing::{
     EnqueueIndexResponse, HybridSearch, IndexJobView, IndexStatusView, IndexingService, SearchError,
 };

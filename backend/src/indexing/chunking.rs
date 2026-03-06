@@ -306,7 +306,11 @@ fn token_count(text: &str) -> usize {
 fn build_snippet(text: &str) -> String {
     let mut lines = text.lines().take(8).collect::<Vec<_>>().join("\n");
     if lines.len() > 420 {
-        lines.truncate(420);
+        let mut cutoff = 420;
+        while cutoff > 0 && !lines.is_char_boundary(cutoff) {
+            cutoff -= 1;
+        }
+        lines.truncate(cutoff);
     }
     lines
 }
@@ -357,5 +361,12 @@ mod tests {
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0].start_line, 1);
         assert_eq!(blocks[1].start_line, 3);
+    }
+
+    #[test]
+    fn snippet_truncation_preserves_utf8_boundaries() {
+        let text = format!("{}ésuffix", "a".repeat(419));
+        let snippet = build_snippet(&text);
+        assert_eq!(snippet.len(), 419);
     }
 }

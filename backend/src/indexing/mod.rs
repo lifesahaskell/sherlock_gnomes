@@ -939,6 +939,11 @@ fn first_matching_line(start_line: i32, content: &str, query: &str) -> (i32, Str
     (start_line, fallback)
 }
 
+#[doc(hidden)]
+pub fn fuzz_parse_semantic_blocks(path: &str, content: &str) {
+    let _ = chunking::parse_semantic_blocks(path, content);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
