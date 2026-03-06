@@ -93,7 +93,19 @@ export type HealthResponse = {
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:8787";
 
-async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
+function hasHeaders(headers: Headers): boolean {
+  return headers.keys().next().done === false;
+}
+
+function readApiKeyForRequest(path: string): string | null {
+  if (!path.startsWith("/api/")) {
+    return null;
+  }
+  const key = process.env.NEXT_PUBLIC_EXPLORER_READ_API_KEY?.trim();
+  return key && key.length > 0 ? key : null;
+}
+
+function buildRequestHeaders(path: string, init: RequestInit | undefined): Headers | undefined {
   const method = init?.method?.toUpperCase() ?? "GET";
   const hasRequestBody = init?.body !== undefined;
   const needsJsonHeader =
@@ -104,15 +116,30 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
     headers.set("Content-Type", "application/json");
   }
 
-  const readApiKey = process.env.NEXT_PUBLIC_EXPLORER_READ_API_KEY?.trim();
-  if (path.startsWith("/api/") && readApiKey) {
+  const readApiKey = readApiKeyForRequest(path);
+  if (readApiKey) {
     headers.set("X-API-Key", readApiKey);
   }
 
-  const hasHeaders = headers.keys().next().done === false;
+  return hasHeaders(headers) ? headers : undefined;
+}
+
+function buildSearchQueryString(query: string, path: string, limit: number): string {
+  const params = new URLSearchParams({
+    query,
+    limit: String(limit)
+  });
+  if (path) {
+    params.set("path", path);
+  }
+  return params.toString();
+}
+
+async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = buildRequestHeaders(path, init);
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
-    ...(hasHeaders ? { headers } : {})
+    ...(headers ? { headers } : {})
   });
 
   if (!response.ok) {
@@ -143,14 +170,9 @@ export function searchCode(
   path = "",
   limit = 50
 ): Promise<SearchResponse> {
-  const params = new URLSearchParams({
-    query,
-    limit: String(limit)
-  });
-  if (path) {
-    params.set("path", path);
-  }
-  return fetchJson<SearchResponse>(`/api/search?${params.toString()}`);
+  return fetchJson<SearchResponse>(
+    `/api/search?${buildSearchQueryString(query, path, limit)}`
+  );
 }
 
 export function searchHybrid(
@@ -158,14 +180,9 @@ export function searchHybrid(
   path = "",
   limit = 50
 ): Promise<HybridSearchResponse> {
-  const params = new URLSearchParams({
-    query,
-    limit: String(limit)
-  });
-  if (path) {
-    params.set("path", path);
-  }
-  return fetchJson<HybridSearchResponse>(`/api/search/hybrid?${params.toString()}`);
+  return fetchJson<HybridSearchResponse>(
+    `/api/search/hybrid?${buildSearchQueryString(query, path, limit)}`
+  );
 }
 
 export function askCodebase(

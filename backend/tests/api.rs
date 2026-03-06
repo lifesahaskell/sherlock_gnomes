@@ -1,9 +1,9 @@
 use std::{fs, path::PathBuf, sync::Arc, time::Duration};
 
 use axum::{
+    Router,
     body::Body,
     http::{Request, StatusCode},
-    Router,
 };
 use codebase_explorer_backend::{
     ApiSecurityConfig, IndexingService, build_app_with_indexing_and_hybrid_toggle_and_security,
@@ -122,6 +122,55 @@ fn put_request(uri: &str, payload: Value) -> Request<Body> {
         .expect("build PUT request")
 }
 
+fn set_test_env_var(key: &str, value: &str) {
+    // SAFETY: These calls are constrained to serial integration tests that intentionally
+    // control process-level environment to exercise env-driven runtime behavior.
+    unsafe {
+        std::env::set_var(key, value);
+    }
+}
+
+fn configure_mock_indexing_env(database_url: &str) {
+    set_test_env_var("DATABASE_URL", database_url);
+    set_test_env_var("EMBEDDING_PROVIDER", "mock");
+}
+
+async fn wait_for_indexing_completion(app: &Router, failure_context: &str, timeout_message: &str) {
+    for _ in 0..30 {
+        let status_response = app
+            .clone()
+            .oneshot(get_request("/api/index/status"))
+            .await
+            .expect("send index status request");
+        assert_eq!(status_response.status(), StatusCode::OK);
+        let status_payload = body_json(status_response.into_body()).await;
+
+        let current_status = status_payload
+            .get("current_job")
+            .and_then(|current| current.get("status"))
+            .and_then(Value::as_str);
+        let last_status = status_payload
+            .get("last_completed_job")
+            .and_then(|current| current.get("status"))
+            .and_then(Value::as_str);
+
+        if matches!(current_status, Some("running" | "queued")) {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            continue;
+        }
+        if let Some("succeeded") = last_status {
+            return;
+        }
+        if let Some("failed") = last_status {
+            panic!("{failure_context}: {status_payload}");
+        }
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    panic!("{timeout_message}");
+}
+
 #[tokio::test]
 async fn health_returns_ok_and_root() {
     let temp = tempdir().expect("create temp dir");
@@ -160,19 +209,23 @@ async fn health_supports_cors_preflight() {
         .to_str()
         .unwrap();
     assert_eq!(access_control_allow_origin, "http://127.0.0.1:3000");
-    assert!(preflight_headers
-        .get("access-control-allow-methods")
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .contains("GET"));
-    assert!(preflight_headers
-        .get("access-control-allow-headers")
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_lowercase()
-        .contains("content-type"));
+    assert!(
+        preflight_headers
+            .get("access-control-allow-methods")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("GET")
+    );
+    assert!(
+        preflight_headers
+            .get("access-control-allow-headers")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_lowercase()
+            .contains("content-type")
+    );
 
     let health_response = app
         .clone()
@@ -193,10 +246,12 @@ async fn api_cors_rejects_unknown_origin_preflight() {
         .expect("send OPTIONS request");
 
     assert_eq!(preflight.status(), StatusCode::OK);
-    assert!(preflight
-        .headers()
-        .get("access-control-allow-origin")
-        .is_none());
+    assert!(
+        preflight
+            .headers()
+            .get("access-control-allow-origin")
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -233,7 +288,11 @@ async fn read_key_cannot_access_admin_endpoints() {
 
     let forbidden = app
         .clone()
-        .oneshot(post_request_with_key("/api/index", json!({}), TEST_READ_API_KEY))
+        .oneshot(post_request_with_key(
+            "/api/index",
+            json!({}),
+            TEST_READ_API_KEY,
+        ))
         .await
         .expect("send read-key admin request");
     assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
@@ -458,11 +517,7 @@ async fn search_rejects_unsafe_filter_paths() {
     fs::write(temp.path().join("alpha.rs"), "fn alpha() {}").expect("write file");
     let root = temp.path().canonicalize().expect("canonicalize root");
 
-    // SAFETY: This test opts into environment mutation and is gated by TEST_DATABASE_URL.
-    unsafe {
-        std::env::set_var("DATABASE_URL", &test_database_url);
-        std::env::set_var("EMBEDDING_PROVIDER", "mock");
-    }
+    configure_mock_indexing_env(&test_database_url);
 
     let indexing = load_indexing_from_env(Arc::new(root.clone()))
         .await
@@ -697,11 +752,7 @@ async fn list_profiles_returns_created_profiles() {
     let temp = tempdir().expect("create temp dir");
     let root = temp.path().canonicalize().expect("canonicalize root");
 
-    // SAFETY: This test opts into environment mutation and is gated by TEST_DATABASE_URL.
-    unsafe {
-        std::env::set_var("DATABASE_URL", &test_database_url);
-        std::env::set_var("EMBEDDING_PROVIDER", "mock");
-    }
+    configure_mock_indexing_env(&test_database_url);
 
     let indexing = load_indexing_from_env(Arc::new(root.clone()))
         .await
@@ -767,11 +818,7 @@ async fn update_profile_applies_edits_and_rejects_nonexistent_profile() {
     let temp = tempdir().expect("create temp dir");
     let root = temp.path().canonicalize().expect("canonicalize root");
 
-    // SAFETY: This test opts into environment mutation and is gated by TEST_DATABASE_URL.
-    unsafe {
-        std::env::set_var("DATABASE_URL", &test_database_url);
-        std::env::set_var("EMBEDDING_PROVIDER", "mock");
-    }
+    configure_mock_indexing_env(&test_database_url);
 
     let indexing = load_indexing_from_env(Arc::new(root.clone()))
         .await
@@ -844,11 +891,7 @@ async fn indexed_search_and_hybrid_work_with_database() {
     fs::write(temp.path().join("alpha.rs"), "fn alpha() {}\nfn beta() {}").expect("write file");
     let root = temp.path().canonicalize().expect("canonicalize root");
 
-    // SAFETY: This test opts into environment mutation and is gated by TEST_DATABASE_URL.
-    unsafe {
-        std::env::set_var("DATABASE_URL", &test_database_url);
-        std::env::set_var("EMBEDDING_PROVIDER", "mock");
-    }
+    configure_mock_indexing_env(&test_database_url);
 
     let indexing = load_indexing_from_env(Arc::new(root.clone()))
         .await
@@ -879,38 +922,12 @@ async fn indexed_search_and_hybrid_work_with_database() {
         .expect("send index start request");
     assert_eq!(start.status(), StatusCode::ACCEPTED);
 
-    let mut completed = false;
-    for _ in 0..30 {
-        let status_response = app
-            .clone()
-            .oneshot(get_request("/api/index/status"))
-            .await
-            .expect("send index status request");
-        assert_eq!(status_response.status(), StatusCode::OK);
-        let status_payload = body_json(status_response.into_body()).await;
-        let current_status = status_payload
-            .get("current_job")
-            .and_then(|current| current.get("status"))
-            .and_then(Value::as_str);
-        let last_status = status_payload
-            .get("last_completed_job")
-            .and_then(|current| current.get("status"))
-            .and_then(Value::as_str);
-
-        if matches!(current_status, Some("running" | "queued")) {
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            continue;
-        }
-        if let Some("succeeded") = last_status {
-            completed = true;
-            break;
-        }
-        if let Some("failed") = last_status {
-            panic!("indexing job failed: {status_payload}");
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    assert!(completed, "indexing did not complete within timeout");
+    wait_for_indexing_completion(
+        &app,
+        "indexing job failed",
+        "indexing did not complete within timeout",
+    )
+    .await;
 
     let keyword = app
         .clone()
@@ -954,12 +971,8 @@ async fn indexing_skips_sensitive_files_by_default_and_allows_override() {
     fs::write(temp.path().join("visible.rs"), "fn visible() {}").expect("write visible file");
     let root = temp.path().canonicalize().expect("canonicalize root");
 
-    // SAFETY: This test opts into environment mutation and is gated by TEST_DATABASE_URL.
-    unsafe {
-        std::env::set_var("DATABASE_URL", &test_database_url);
-        std::env::set_var("EMBEDDING_PROVIDER", "mock");
-        std::env::set_var("EXPLORER_INDEX_INCLUDE_SENSITIVE_FILES", "false");
-    }
+    configure_mock_indexing_env(&test_database_url);
+    set_test_env_var("EXPLORER_INDEX_INCLUDE_SENSITIVE_FILES", "false");
 
     let indexing = load_indexing_from_env(Arc::new(root.clone()))
         .await
@@ -983,38 +996,12 @@ async fn indexing_skips_sensitive_files_by_default_and_allows_override() {
         .expect("send index start request");
     assert_eq!(start.status(), StatusCode::ACCEPTED);
 
-    let mut completed = false;
-    for _ in 0..30 {
-        let status_response = app
-            .clone()
-            .oneshot(get_request("/api/index/status"))
-            .await
-            .expect("send index status request");
-        assert_eq!(status_response.status(), StatusCode::OK);
-        let status_payload = body_json(status_response.into_body()).await;
-        let current_status = status_payload
-            .get("current_job")
-            .and_then(|current| current.get("status"))
-            .and_then(Value::as_str);
-        let last_status = status_payload
-            .get("last_completed_job")
-            .and_then(|current| current.get("status"))
-            .and_then(Value::as_str);
-
-        if matches!(current_status, Some("running" | "queued")) {
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            continue;
-        }
-        if let Some("succeeded") = last_status {
-            completed = true;
-            break;
-        }
-        if let Some("failed") = last_status {
-            panic!("indexing job failed: {status_payload}");
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    assert!(completed, "indexing did not complete within timeout");
+    wait_for_indexing_completion(
+        &app,
+        "indexing job failed",
+        "indexing did not complete within timeout",
+    )
+    .await;
 
     let env_indexed: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM indexed_files WHERE path = '.env')")
@@ -1029,10 +1016,7 @@ async fn indexing_skips_sensitive_files_by_default_and_allows_override() {
     assert!(!env_indexed);
     assert!(!pem_indexed);
 
-    // SAFETY: Same serial test mutates environment for explicit override validation.
-    unsafe {
-        std::env::set_var("EXPLORER_INDEX_INCLUDE_SENSITIVE_FILES", "true");
-    }
+    set_test_env_var("EXPLORER_INDEX_INCLUDE_SENSITIVE_FILES", "true");
 
     let start_override = app
         .clone()
@@ -1041,38 +1025,12 @@ async fn indexing_skips_sensitive_files_by_default_and_allows_override() {
         .expect("send override index start request");
     assert_eq!(start_override.status(), StatusCode::ACCEPTED);
 
-    let mut override_completed = false;
-    for _ in 0..30 {
-        let status_response = app
-            .clone()
-            .oneshot(get_request("/api/index/status"))
-            .await
-            .expect("send index status request");
-        assert_eq!(status_response.status(), StatusCode::OK);
-        let status_payload = body_json(status_response.into_body()).await;
-        let current_status = status_payload
-            .get("current_job")
-            .and_then(|current| current.get("status"))
-            .and_then(Value::as_str);
-        let last_status = status_payload
-            .get("last_completed_job")
-            .and_then(|current| current.get("status"))
-            .and_then(Value::as_str);
-
-        if matches!(current_status, Some("running" | "queued")) {
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            continue;
-        }
-        if let Some("succeeded") = last_status {
-            override_completed = true;
-            break;
-        }
-        if let Some("failed") = last_status {
-            panic!("override indexing job failed: {status_payload}");
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    assert!(override_completed, "override indexing did not complete within timeout");
+    wait_for_indexing_completion(
+        &app,
+        "override indexing job failed",
+        "override indexing did not complete within timeout",
+    )
+    .await;
 
     let env_indexed_after_override: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM indexed_files WHERE path = '.env')")
@@ -1098,11 +1056,7 @@ async fn create_profile_persists_and_rejects_duplicate_email() {
     let temp = tempdir().expect("create temp dir");
     let root = temp.path().canonicalize().expect("canonicalize root");
 
-    // SAFETY: This test opts into environment mutation and is gated by TEST_DATABASE_URL.
-    unsafe {
-        std::env::set_var("DATABASE_URL", &test_database_url);
-        std::env::set_var("EMBEDDING_PROVIDER", "mock");
-    }
+    configure_mock_indexing_env(&test_database_url);
 
     let indexing = load_indexing_from_env(Arc::new(root.clone()))
         .await

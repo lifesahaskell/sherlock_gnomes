@@ -7,21 +7,16 @@ use std::{
 };
 
 use axum::{
+    Json, Router,
     body::Body,
-    extract::{
-        DefaultBodyLimit,
-        Path as PathParam,
-        Query,
-        State,
-    },
+    extract::{DefaultBodyLimit, Path as PathParam, Query, State},
     http::{
-        header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue},
         Method, Request, StatusCode,
+        header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue},
     },
     middleware::{self, Next},
     response::IntoResponse,
     routing::{get, post, put},
-    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
@@ -29,8 +24,8 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 
 mod indexing;
 
-pub use indexing::fuzz_parse_semantic_blocks;
 pub use indexing::IndexingService;
+pub use indexing::fuzz_parse_semantic_blocks;
 use indexing::{
     EnqueueIndexResponse, HybridSearch, IndexJobView, IndexStatusView, ProfileError, SearchError,
     UserProfile,
@@ -261,7 +256,10 @@ fn load_allowed_origins_from_env() -> Vec<HeaderValue> {
 fn default_allowed_origins() -> Vec<HeaderValue> {
     DEFAULT_ALLOWED_ORIGINS
         .into_iter()
-        .map(|item| item.parse().expect("failed to parse default allowed origin"))
+        .map(|item| {
+            item.parse()
+                .expect("failed to parse default allowed origin")
+        })
         .collect()
 }
 
@@ -271,9 +269,7 @@ pub fn validate_runtime_security_config(config: &ApiSecurityConfig) -> Result<()
     }
 
     if config.read_api_key.is_none() {
-        return Err(
-            "EXPLORER_READ_API_KEY is required when authentication is enabled".to_string(),
-        );
+        return Err("EXPLORER_READ_API_KEY is required when authentication is enabled".to_string());
     }
 
     if config.admin_api_key.is_none() {
@@ -491,7 +487,10 @@ fn validate_api_access(
 }
 
 fn provided_auth_credential(headers: &HeaderMap) -> Option<&str> {
-    if let Some(api_key) = headers.get("x-api-key").and_then(|value| value.to_str().ok()) {
+    if let Some(api_key) = headers
+        .get("x-api-key")
+        .and_then(|value| value.to_str().ok())
+    {
         let trimmed = api_key.trim();
         if !trimmed.is_empty() {
             return Some(trimmed);
@@ -506,11 +505,7 @@ fn provided_auth_credential(headers: &HeaderMap) -> Option<&str> {
         .or_else(|| auth_header.strip_prefix("bearer "))?
         .trim();
 
-    if token.is_empty() {
-        None
-    } else {
-        Some(token)
-    }
+    if token.is_empty() { None } else { Some(token) }
 }
 
 fn configured_key_matches(configured: &Option<String>, provided: &str) -> bool {
@@ -629,15 +624,7 @@ async fn search(
     State(state): State<AppState>,
     Query(query): Query<SearchQuery>,
 ) -> Result<Json<SearchResponse>, AppError> {
-    let q = query.query.trim();
-    if q.is_empty() {
-        return Err(AppError::bad_request("query cannot be empty"));
-    }
-    if q.chars().count() > API_QUERY_MAX_CHARACTERS {
-        return Err(AppError::bad_request(format!(
-            "query must be {API_QUERY_MAX_CHARACTERS} characters or fewer"
-        )));
-    }
+    let q = validate_search_query(&query.query)?;
 
     validate_filter_path(query.path.as_deref())?;
 
@@ -669,15 +656,7 @@ async fn search_hybrid(
         return Err(AppError::not_found("hybrid search is disabled"));
     }
 
-    let q = query.query.trim();
-    if q.is_empty() {
-        return Err(AppError::bad_request("query cannot be empty"));
-    }
-    if q.chars().count() > API_QUERY_MAX_CHARACTERS {
-        return Err(AppError::bad_request(format!(
-            "query must be {API_QUERY_MAX_CHARACTERS} characters or fewer"
-        )));
-    }
+    let q = validate_search_query(&query.query)?;
 
     validate_filter_path(query.path.as_deref())?;
 
@@ -780,48 +759,14 @@ async fn ask(
     State(state): State<AppState>,
     Json(request): Json<AskRequest>,
 ) -> Result<Json<AskResponse>, AppError> {
-    let question = request.question.trim();
-    if question.is_empty() {
-        return Err(AppError::bad_request("question cannot be empty"));
-    }
-    if question.chars().count() > API_QUESTION_MAX_CHARACTERS {
-        return Err(AppError::bad_request(format!(
-            "question must be {API_QUESTION_MAX_CHARACTERS} characters or fewer"
-        )));
-    }
-
-    if request.paths.is_empty() {
-        return Err(AppError::bad_request(
-            "paths cannot be empty; provide files to build context",
-        ));
-    }
-    if request.paths.len() > API_ASK_PATH_LIMIT {
-        return Err(AppError::bad_request(format!(
-            "paths must include at most {API_ASK_PATH_LIMIT} entries"
-        )));
-    }
+    let question = validate_ask_question(&request.question)?;
+    validate_ask_paths(&request.paths)?;
 
     let mut context = Vec::new();
     for path in request.paths.iter().take(API_ASK_PATH_LIMIT) {
-        let resolved = resolve_within_root(&state.root_dir, Some(path))?;
-        if !resolved.is_file() {
-            continue;
+        if let Some(file_context) = build_file_context(&state.root_dir, path)? {
+            context.push(file_context);
         }
-        let Ok(content) = fs::read_to_string(&resolved) else {
-            continue;
-        };
-        let preview = content
-            .lines()
-            .take(FILE_PREVIEW_LINES)
-            .collect::<Vec<_>>()
-            .join("\n")
-            .trim()
-            .to_string();
-
-        context.push(FileContext {
-            path: to_relative_path(&state.root_dir, &resolved)?,
-            preview,
-        });
     }
 
     let guidance = format!(
@@ -948,18 +893,7 @@ fn is_likely_email(value: &str) -> bool {
 
 fn validate_filter_path(path: Option<&str>) -> Result<(), AppError> {
     if let Some(value) = path {
-        if value.chars().count() > API_PATH_MAX_CHARACTERS {
-            return Err(AppError::bad_request(format!(
-                "path must be {API_PATH_MAX_CHARACTERS} characters or fewer"
-            )));
-        }
-
-        let relative = StdPath::new(value);
-        if relative.is_absolute() || contains_parent_dir(relative) {
-            return Err(AppError::bad_request(
-                "path must be relative and cannot contain parent traversal",
-            ));
-        }
+        validate_relative_request_path(value)?;
     }
 
     Ok(())
@@ -969,19 +903,8 @@ fn resolve_within_root(root: &StdPath, requested: Option<&str>) -> Result<PathBu
     match requested {
         None => Ok(root.to_path_buf()),
         Some(path) => {
-            if path.chars().count() > API_PATH_MAX_CHARACTERS {
-                return Err(AppError::bad_request(format!(
-                    "path must be {API_PATH_MAX_CHARACTERS} characters or fewer"
-                )));
-            }
-
-            let relative = StdPath::new(path);
-            if relative.is_absolute() || contains_parent_dir(relative) {
-                return Err(AppError::bad_request(
-                    "path must be relative and cannot contain parent traversal",
-                ));
-            }
-            let joined = root.join(relative);
+            validate_relative_request_path(path)?;
+            let joined = root.join(path);
             let canonical = joined
                 .canonicalize()
                 .map_err(|_| AppError::bad_request("path does not exist"))?;
@@ -1016,11 +939,90 @@ fn to_relative_path(root: &StdPath, full_path: &StdPath) -> Result<String, AppEr
 
 fn validate_optional_relative_path(path: Option<&str>) -> Result<(), AppError> {
     if let Some(value) = path {
-        if value.chars().count() > API_PATH_MAX_CHARACTERS {
-            return Err(AppError::bad_request(format!(
-                "path must be {API_PATH_MAX_CHARACTERS} characters or fewer"
-            )));
-        }
+        validate_path_length(value)?;
+    }
+    Ok(())
+}
+
+fn validate_search_query(query: &str) -> Result<&str, AppError> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::bad_request("query cannot be empty"));
+    }
+    if trimmed.chars().count() > API_QUERY_MAX_CHARACTERS {
+        return Err(AppError::bad_request(format!(
+            "query must be {API_QUERY_MAX_CHARACTERS} characters or fewer"
+        )));
+    }
+    Ok(trimmed)
+}
+
+fn validate_ask_question(question: &str) -> Result<&str, AppError> {
+    let trimmed = question.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::bad_request("question cannot be empty"));
+    }
+    if trimmed.chars().count() > API_QUESTION_MAX_CHARACTERS {
+        return Err(AppError::bad_request(format!(
+            "question must be {API_QUESTION_MAX_CHARACTERS} characters or fewer"
+        )));
+    }
+    Ok(trimmed)
+}
+
+fn validate_ask_paths(paths: &[String]) -> Result<(), AppError> {
+    if paths.is_empty() {
+        return Err(AppError::bad_request(
+            "paths cannot be empty; provide files to build context",
+        ));
+    }
+    if paths.len() > API_ASK_PATH_LIMIT {
+        return Err(AppError::bad_request(format!(
+            "paths must include at most {API_ASK_PATH_LIMIT} entries"
+        )));
+    }
+    Ok(())
+}
+
+fn build_file_context(root: &StdPath, path: &str) -> Result<Option<FileContext>, AppError> {
+    let resolved = resolve_within_root(root, Some(path))?;
+    if !resolved.is_file() {
+        return Ok(None);
+    }
+    let Ok(content) = fs::read_to_string(&resolved) else {
+        return Ok(None);
+    };
+
+    let preview = content
+        .lines()
+        .take(FILE_PREVIEW_LINES)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string();
+
+    Ok(Some(FileContext {
+        path: to_relative_path(root, &resolved)?,
+        preview,
+    }))
+}
+
+fn validate_relative_request_path(path: &str) -> Result<(), AppError> {
+    validate_path_length(path)?;
+    let relative = StdPath::new(path);
+    if relative.is_absolute() || contains_parent_dir(relative) {
+        return Err(AppError::bad_request(
+            "path must be relative and cannot contain parent traversal",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_path_length(path: &str) -> Result<(), AppError> {
+    if path.chars().count() > API_PATH_MAX_CHARACTERS {
+        return Err(AppError::bad_request(format!(
+            "path must be {API_PATH_MAX_CHARACTERS} characters or fewer"
+        )));
     }
     Ok(())
 }
