@@ -529,8 +529,13 @@ impl IntoResponse for AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use std::fs;
     use tempfile::tempdir;
+
+    fn safe_relative_path_strategy() -> impl Strategy<Value = String> {
+        prop::collection::vec("[A-Za-z0-9_]{1,12}", 1..6).prop_map(|parts| parts.join("/"))
+    }
 
     #[test]
     fn parent_dir_detection_works() {
@@ -594,5 +599,24 @@ mod tests {
     fn parse_env_bool_rejects_unknown_values() {
         assert_eq!(parse_env_bool(""), None);
         assert_eq!(parse_env_bool("banana"), None);
+    }
+
+    proptest! {
+        #[test]
+        fn validate_filter_path_accepts_safe_relative_paths(path in safe_relative_path_strategy()) {
+            prop_assert!(validate_filter_path(Some(&path)).is_ok());
+        }
+
+        #[test]
+        fn validate_filter_path_rejects_absolute_paths(segment in "[A-Za-z0-9_]{1,12}") {
+            let absolute = format!("/{segment}");
+            prop_assert!(validate_filter_path(Some(&absolute)).is_err());
+        }
+
+        #[test]
+        fn validate_filter_path_rejects_parent_segments(segment in "[A-Za-z0-9_]{1,12}") {
+            let escaped = format!("{segment}/../escape");
+            prop_assert!(validate_filter_path(Some(&escaped)).is_err());
+        }
     }
 }

@@ -10,6 +10,7 @@ use codebase_explorer_backend::{
 };
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
+use serial_test::serial;
 use sqlx::PgPool;
 use tempfile::tempdir;
 use tower::ServiceExt;
@@ -113,6 +114,24 @@ async fn tree_rejects_parent_traversal() {
 }
 
 #[tokio::test]
+async fn tree_rejects_url_encoded_parent_traversal() {
+    let temp = tempdir().expect("create temp dir");
+    let app = build_app(temp.path().canonicalize().expect("canonicalize root"));
+
+    let response = app
+        .oneshot(get_request("/api/tree?path=%2e%2e%2fsecret"))
+        .await
+        .expect("send request");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let payload = body_json(response.into_body()).await;
+    assert_eq!(
+        payload["error"],
+        "path must be relative and cannot contain parent traversal"
+    );
+}
+
+#[tokio::test]
 async fn file_returns_content_for_valid_text_file() {
     let temp = tempdir().expect("create temp dir");
     fs::write(temp.path().join("notes.txt"), "Hello\nWorld").expect("write text file");
@@ -147,6 +166,25 @@ async fn file_rejects_directory_and_missing_path() {
         .await
         .expect("send missing request");
     assert_eq!(missing_response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn file_rejects_absolute_and_url_encoded_parent_paths() {
+    let temp = tempdir().expect("create temp dir");
+    let app = build_app(temp.path().canonicalize().expect("canonicalize root"));
+
+    let absolute_response = app
+        .clone()
+        .oneshot(get_request("/api/file?path=/etc/passwd"))
+        .await
+        .expect("send absolute path request");
+    assert_eq!(absolute_response.status(), StatusCode::BAD_REQUEST);
+
+    let encoded_parent_response = app
+        .oneshot(get_request("/api/file?path=%2e%2e%2fsecret.txt"))
+        .await
+        .expect("send encoded traversal request");
+    assert_eq!(encoded_parent_response.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
@@ -186,6 +224,52 @@ async fn indexed_search_requires_database_configuration() {
         .await
         .expect("send index status request");
     assert_eq!(index_status.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+#[serial]
+async fn search_rejects_unsafe_filter_paths() {
+    let Some(test_database_url) = std::env::var("TEST_DATABASE_URL").ok() else {
+        return;
+    };
+
+    let temp = tempdir().expect("create temp dir");
+    fs::write(temp.path().join("alpha.rs"), "fn alpha() {}").expect("write file");
+    let root = temp.path().canonicalize().expect("canonicalize root");
+
+    // SAFETY: This test opts into environment mutation and is gated by TEST_DATABASE_URL.
+    unsafe {
+        std::env::set_var("DATABASE_URL", &test_database_url);
+        std::env::set_var("EMBEDDING_PROVIDER", "mock");
+    }
+
+    let indexing = load_indexing_from_env(Arc::new(root.clone()))
+        .await
+        .expect("load indexing from env")
+        .expect("indexing service should be configured");
+
+    let pool = PgPool::connect(&test_database_url)
+        .await
+        .expect("connect test database");
+    sqlx::query("TRUNCATE TABLE semantic_blocks, indexed_files, index_jobs RESTART IDENTITY")
+        .execute(&pool)
+        .await
+        .expect("truncate index tables");
+
+    let app = build_app_with_indexing(root, Some(indexing));
+
+    let absolute_filter = app
+        .clone()
+        .oneshot(get_request("/api/search?query=alpha&path=/etc"))
+        .await
+        .expect("send absolute filter request");
+    assert_eq!(absolute_filter.status(), StatusCode::BAD_REQUEST);
+
+    let traversal_filter = app
+        .oneshot(get_request("/api/search?query=alpha&path=src/../secret"))
+        .await
+        .expect("send traversal filter request");
+    assert_eq!(traversal_filter.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
@@ -282,6 +366,7 @@ async fn ask_caps_context_to_eight_files_and_truncates_preview_lines() {
 }
 
 #[tokio::test]
+#[serial]
 async fn indexed_search_and_hybrid_work_with_database() {
     let Some(test_database_url) = std::env::var("TEST_DATABASE_URL").ok() else {
         return;

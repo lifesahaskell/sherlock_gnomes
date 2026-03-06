@@ -341,6 +341,7 @@ impl LineIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn fallback_windowing_creates_multiple_blocks_for_large_text() {
@@ -368,5 +369,34 @@ mod tests {
         let text = format!("{}ésuffix", "a".repeat(419));
         let snippet = build_snippet(&text);
         assert_eq!(snippet.len(), 419);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+
+        #[test]
+        fn parse_semantic_blocks_preserves_output_invariants(
+            extension in prop::sample::select(vec!["rs", "ts", "tsx", "js", "jsx", "md", "mdx", "txt"]),
+            content in prop::collection::vec(any::<char>(), 0..1200).prop_map(|chars| chars.into_iter().collect::<String>()),
+        ) {
+            let path = format!("property_input.{extension}");
+            let blocks = parse_semantic_blocks(&path, &content);
+
+            for block in &blocks {
+                prop_assert!(block.start_line >= 1);
+                prop_assert!(block.end_line >= block.start_line);
+                prop_assert!(!block.content.trim().is_empty());
+                prop_assert!(block.snippet.len() <= 420);
+            }
+
+            for pair in blocks.windows(2) {
+                let left = &pair[0];
+                let right = &pair[1];
+                prop_assert!(
+                    left.start_line < right.start_line
+                        || (left.start_line == right.start_line && left.end_line <= right.end_line)
+                );
+            }
+        }
     }
 }

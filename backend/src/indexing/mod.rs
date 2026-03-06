@@ -44,6 +44,12 @@ struct QueueState {
     pending: Option<Uuid>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct EnqueueDecision {
+    start_immediately: bool,
+    replaced_pending: Option<Uuid>,
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 struct JobCounters {
     files_scanned: i64,
@@ -154,16 +160,12 @@ impl IndexingService {
         let job_id = Uuid::new_v4();
         self.insert_queued_job(job_id).await?;
 
-        let (start_immediately, replaced_pending) = {
+        let enqueue = {
             let mut queue = self.inner.queue_state.lock().await;
-            if queue.running.is_none() {
-                queue.running = Some(job_id);
-                (true, None)
-            } else {
-                let replaced = queue.pending.replace(job_id);
-                (false, replaced)
-            }
+            apply_enqueue(&mut queue, job_id)
         };
+        let start_immediately = enqueue.start_immediately;
+        let replaced_pending = enqueue.replaced_pending;
 
         if let Some(replaced_job_id) = replaced_pending {
             let _ = self
@@ -939,6 +941,21 @@ fn first_matching_line(start_line: i32, content: &str, query: &str) -> (i32, Str
     (start_line, fallback)
 }
 
+fn apply_enqueue(queue: &mut QueueState, job_id: Uuid) -> EnqueueDecision {
+    if queue.running.is_none() {
+        queue.running = Some(job_id);
+        EnqueueDecision {
+            start_immediately: true,
+            replaced_pending: None,
+        }
+    } else {
+        EnqueueDecision {
+            start_immediately: false,
+            replaced_pending: queue.pending.replace(job_id),
+        }
+    }
+}
+
 #[doc(hidden)]
 pub fn fuzz_parse_semantic_blocks(path: &str, content: &str) {
     let _ = chunking::parse_semantic_blocks(path, content);
@@ -959,5 +976,53 @@ mod tests {
         let (line_number, line) = first_matching_line(20, "alpha\nbeta", "missing");
         assert_eq!(line_number, 20);
         assert_eq!(line, "alpha");
+    }
+
+    #[test]
+    fn enqueue_transition_starts_immediately_when_idle() {
+        let mut queue = QueueState::default();
+        let job_id = Uuid::new_v4();
+
+        let decision = apply_enqueue(&mut queue, job_id);
+
+        assert!(decision.start_immediately);
+        assert_eq!(decision.replaced_pending, None);
+        assert_eq!(queue.running, Some(job_id));
+        assert_eq!(queue.pending, None);
+    }
+
+    #[test]
+    fn enqueue_transition_queues_when_job_is_running() {
+        let running_job = Uuid::new_v4();
+        let mut queue = QueueState {
+            running: Some(running_job),
+            pending: None,
+        };
+        let queued_job = Uuid::new_v4();
+
+        let decision = apply_enqueue(&mut queue, queued_job);
+
+        assert!(!decision.start_immediately);
+        assert_eq!(decision.replaced_pending, None);
+        assert_eq!(queue.running, Some(running_job));
+        assert_eq!(queue.pending, Some(queued_job));
+    }
+
+    #[test]
+    fn enqueue_transition_replaces_existing_pending_job() {
+        let running_job = Uuid::new_v4();
+        let previous_pending = Uuid::new_v4();
+        let mut queue = QueueState {
+            running: Some(running_job),
+            pending: Some(previous_pending),
+        };
+        let newer_pending = Uuid::new_v4();
+
+        let decision = apply_enqueue(&mut queue, newer_pending);
+
+        assert!(!decision.start_immediately);
+        assert_eq!(decision.replaced_pending, Some(previous_pending));
+        assert_eq!(queue.running, Some(running_job));
+        assert_eq!(queue.pending, Some(newer_pending));
     }
 }

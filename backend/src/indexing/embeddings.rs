@@ -167,3 +167,49 @@ impl EmbeddingProvider for MockEmbeddingProvider {
         Ok(all_embeddings)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn openai_provider_reports_missing_api_key() {
+        let provider = OpenAiEmbeddingProvider {
+            client: reqwest::Client::new(),
+            api_key: None,
+            model: "text-embedding-3-small".to_string(),
+        };
+
+        let error = provider
+            .ensure_available()
+            .expect_err("provider should fail without API key");
+        assert!(error.contains("OPENAI_API_KEY is required"));
+    }
+
+    #[tokio::test]
+    async fn mock_provider_returns_expected_dimensions() {
+        let provider = MockEmbeddingProvider;
+        let embeddings = provider
+            .embed(&["alpha".to_string(), "beta".to_string()])
+            .await
+            .expect("mock embeddings should succeed");
+
+        assert_eq!(embeddings.len(), 2);
+        assert!(
+            embeddings
+                .iter()
+                .all(|embedding| embedding.len() == EMBEDDING_DIM)
+        );
+    }
+
+    #[tokio::test]
+    async fn mock_provider_is_deterministic_for_same_input() {
+        let provider = MockEmbeddingProvider;
+        let input = vec!["repeatable input".to_string()];
+
+        let first = provider.embed(&input).await.expect("first embedding run");
+        let second = provider.embed(&input).await.expect("second embedding run");
+
+        assert_eq!(first, second);
+    }
+}
