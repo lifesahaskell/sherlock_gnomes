@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   askCodebase,
+  createUserProfile,
   getFile,
   getHealth,
   getIndexStatus,
@@ -172,6 +173,44 @@ describe("api client", () => {
 
     const calledUrl = new URL(String(mockFetch.mock.calls[0][0]));
     expect(calledUrl.pathname).toBe("/api/index/status");
+  });
+
+  it("sends JSON POST body for createUserProfile", async () => {
+    const mockFetch = vi.mocked(global.fetch);
+    mockFetch.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: 1,
+          display_name: "Ada",
+          email: "ada@example.com",
+          bio: "Pioneer",
+          created_at: "2026-03-06T00:00:00Z"
+        }),
+        {
+          status: 201,
+          headers: { "Content-Type": "application/json" }
+        }
+      )
+    );
+
+    await createUserProfile({
+      display_name: "Ada",
+      email: "ada@example.com",
+      bio: "Pioneer"
+    });
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:8787/api/profiles",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          display_name: "Ada",
+          email: "ada@example.com",
+          bio: "Pioneer"
+        }),
+        headers: expect.objectContaining({ "Content-Type": "application/json" })
+      })
+    );
   });
 
   it("throws backend error message when request is not ok", async () => {

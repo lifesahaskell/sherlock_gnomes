@@ -69,6 +69,14 @@ export type AskResponse = {
   context: { path: string; preview: string }[];
 };
 
+export type UserProfile = {
+  id: number;
+  display_name: string;
+  email: string;
+  bio: string;
+  created_at: string;
+};
+
 export type HealthResponse = {
   status: string;
   root_dir: string;
@@ -160,4 +168,15 @@ export function startIndexing(): Promise<StartIndexingResponse> {
 
 export function getIndexStatus(): Promise<IndexStatusResponse> {
   return fetchJson<IndexStatusResponse>("/api/index/status");
+}
+
+export function createUserProfile(input: {
+  display_name: string;
+  email: string;
+  bio?: string;
+}): Promise<UserProfile> {
+  return fetchJson<UserProfile>("/api/profiles", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
 }

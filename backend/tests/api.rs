@@ -220,10 +220,24 @@ async fn indexed_search_requires_database_configuration() {
     assert_eq!(index_start.status(), StatusCode::SERVICE_UNAVAILABLE);
 
     let index_status = app
+        .clone()
         .oneshot(get_request("/api/index/status"))
         .await
         .expect("send index status request");
     assert_eq!(index_status.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let profile_create = app
+        .oneshot(post_request(
+            "/api/profiles",
+            json!({
+                "display_name": "Ada",
+                "email": "ada@example.com",
+                "bio": "Test profile"
+            }),
+        ))
+        .await
+        .expect("send profile create request");
+    assert_eq!(profile_create.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
 
 #[tokio::test]
@@ -366,6 +380,28 @@ async fn ask_caps_context_to_eight_files_and_truncates_preview_lines() {
 }
 
 #[tokio::test]
+async fn create_profile_rejects_invalid_payload() {
+    let temp = tempdir().expect("create temp dir");
+    let app = build_app(temp.path().canonicalize().expect("canonicalize root"));
+
+    let response = app
+        .oneshot(post_request(
+            "/api/profiles",
+            json!({
+                "display_name": " ",
+                "email": "not-an-email",
+                "bio": "bio"
+            }),
+        ))
+        .await
+        .expect("send profile request");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let payload = body_json(response.into_body()).await;
+    assert_eq!(payload["error"], "display_name cannot be empty");
+}
+
+#[tokio::test]
 #[serial]
 async fn indexed_search_and_hybrid_work_with_database() {
     let Some(test_database_url) = std::env::var("TEST_DATABASE_URL").ok() else {
@@ -471,4 +507,81 @@ async fn indexed_search_and_hybrid_work_with_database() {
         .as_array()
         .expect("hybrid matches array");
     assert!(!hybrid_matches.is_empty());
+}
+
+#[tokio::test]
+#[serial]
+async fn create_profile_persists_and_rejects_duplicate_email() {
+    let Some(test_database_url) = std::env::var("TEST_DATABASE_URL").ok() else {
+        return;
+    };
+
+    let temp = tempdir().expect("create temp dir");
+    let root = temp.path().canonicalize().expect("canonicalize root");
+
+    // SAFETY: This test opts into environment mutation and is gated by TEST_DATABASE_URL.
+    unsafe {
+        std::env::set_var("DATABASE_URL", &test_database_url);
+        std::env::set_var("EMBEDDING_PROVIDER", "mock");
+    }
+
+    let indexing = load_indexing_from_env(Arc::new(root.clone()))
+        .await
+        .expect("load indexing from env")
+        .expect("indexing service should be configured");
+
+    let pool = PgPool::connect(&test_database_url)
+        .await
+        .expect("connect test database");
+    sqlx::query(
+        "TRUNCATE TABLE semantic_blocks, indexed_files, index_jobs, user_profiles RESTART IDENTITY",
+    )
+    .execute(&pool)
+    .await
+    .expect("truncate profile and index tables");
+
+    let app = build_app_with_indexing(root, Some(indexing));
+
+    let created = app
+        .clone()
+        .oneshot(post_request(
+            "/api/profiles",
+            json!({
+                "display_name": "Ada Lovelace",
+                "email": "ADA@EXAMPLE.COM",
+                "bio": "Pioneer"
+            }),
+        ))
+        .await
+        .expect("send create profile request");
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let created_payload = body_json(created.into_body()).await;
+    assert_eq!(created_payload["display_name"], "Ada Lovelace");
+    assert_eq!(created_payload["email"], "ada@example.com");
+    assert_eq!(created_payload["bio"], "Pioneer");
+    assert!(
+        created_payload["id"]
+            .as_i64()
+            .expect("profile id should be an integer")
+            >= 1
+    );
+    assert!(created_payload["created_at"].as_str().is_some());
+
+    let duplicate = app
+        .oneshot(post_request(
+            "/api/profiles",
+            json!({
+                "display_name": "Another Ada",
+                "email": "ada@example.com",
+                "bio": ""
+            }),
+        ))
+        .await
+        .expect("send duplicate profile request");
+    assert_eq!(duplicate.status(), StatusCode::CONFLICT);
+    let duplicate_payload = body_json(duplicate.into_body()).await;
+    assert_eq!(
+        duplicate_payload["error"],
+        "a profile with this email already exists"
+    );
 }

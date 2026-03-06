@@ -18,7 +18,8 @@ mod indexing;
 
 pub use indexing::fuzz_parse_semantic_blocks;
 use indexing::{
-    EnqueueIndexResponse, HybridSearch, IndexJobView, IndexStatusView, IndexingService, SearchError,
+    EnqueueIndexResponse, HybridSearch, IndexJobView, IndexStatusView, IndexingService,
+    ProfileError, SearchError, UserProfile,
 };
 
 #[derive(Clone)]
@@ -108,6 +109,13 @@ struct AskRequest {
     paths: Vec<String>,
 }
 
+#[derive(Deserialize)]
+struct CreateProfileRequest {
+    display_name: String,
+    email: String,
+    bio: Option<String>,
+}
+
 #[derive(Serialize)]
 struct AskResponse {
     guidance: String,
@@ -179,6 +187,7 @@ pub fn build_app_with_indexing_and_hybrid_toggle(
         .route("/api/search/hybrid", get(search_hybrid))
         .route("/api/index", post(start_indexing))
         .route("/api/index/status", get(index_status))
+        .route("/api/profiles", post(create_profile))
         .route("/api/ask", post(ask))
         .with_state(state)
         .layer(CorsLayer::permissive())
@@ -358,6 +367,20 @@ async fn index_status(
     }))
 }
 
+async fn create_profile(
+    State(state): State<AppState>,
+    Json(request): Json<CreateProfileRequest>,
+) -> Result<(StatusCode, Json<UserProfile>), AppError> {
+    let (display_name, email, bio) = validate_create_profile_request(request)?;
+    let service = indexing_service(&state)?;
+    let profile = service
+        .create_profile(&display_name, &email, &bio)
+        .await
+        .map_err(app_error_from_profile)?;
+
+    Ok((StatusCode::CREATED, Json(profile)))
+}
+
 async fn ask(
     State(state): State<AppState>,
     Json(request): Json<AskRequest>,
@@ -418,6 +441,53 @@ fn app_error_from_search(error: SearchError) -> AppError {
         SearchError::NoIndex => AppError::conflict(error.message()),
         SearchError::Message(message) => AppError::internal(message),
     }
+}
+
+fn app_error_from_profile(error: ProfileError) -> AppError {
+    match error {
+        ProfileError::DuplicateEmail => AppError::conflict(error.message()),
+        ProfileError::Message(message) => AppError::internal(message),
+    }
+}
+
+fn validate_create_profile_request(
+    request: CreateProfileRequest,
+) -> Result<(String, String, String), AppError> {
+    let display_name = request.display_name.trim();
+    if display_name.is_empty() {
+        return Err(AppError::bad_request("display_name cannot be empty"));
+    }
+    if display_name.chars().count() > 80 {
+        return Err(AppError::bad_request(
+            "display_name must be 80 characters or fewer",
+        ));
+    }
+
+    let email = request.email.trim().to_ascii_lowercase();
+    if email.is_empty() {
+        return Err(AppError::bad_request("email cannot be empty"));
+    }
+    if email.len() > 254 || !is_likely_email(&email) {
+        return Err(AppError::bad_request("email must be a valid email address"));
+    }
+
+    let bio = request.bio.unwrap_or_default().trim().to_string();
+    if bio.chars().count() > 500 {
+        return Err(AppError::bad_request("bio must be 500 characters or fewer"));
+    }
+
+    Ok((display_name.to_string(), email, bio))
+}
+
+fn is_likely_email(value: &str) -> bool {
+    let (local, domain) = match value.split_once('@') {
+        Some(parts) => parts,
+        None => return false,
+    };
+    if local.is_empty() || domain.is_empty() {
+        return false;
+    }
+    domain.contains('.') && !domain.starts_with('.') && !domain.ends_with('.')
 }
 
 fn validate_filter_path(path: Option<&str>) -> Result<(), AppError> {
@@ -599,6 +669,45 @@ mod tests {
     fn parse_env_bool_rejects_unknown_values() {
         assert_eq!(parse_env_bool(""), None);
         assert_eq!(parse_env_bool("banana"), None);
+    }
+
+    #[test]
+    fn create_profile_validation_trims_and_normalizes_fields() {
+        let request = CreateProfileRequest {
+            display_name: "  Ada Lovelace ".to_string(),
+            email: "  ADA@EXAMPLE.COM ".to_string(),
+            bio: Some("  First programmer.  ".to_string()),
+        };
+
+        let (display_name, email, bio) =
+            validate_create_profile_request(request).expect("validate profile request");
+        assert_eq!(display_name, "Ada Lovelace");
+        assert_eq!(email, "ada@example.com");
+        assert_eq!(bio, "First programmer.");
+    }
+
+    #[test]
+    fn create_profile_validation_rejects_invalid_email() {
+        let request = CreateProfileRequest {
+            display_name: "Ada".to_string(),
+            email: "invalid-email".to_string(),
+            bio: None,
+        };
+
+        let result = validate_create_profile_request(request);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn create_profile_validation_rejects_long_bio() {
+        let request = CreateProfileRequest {
+            display_name: "Ada".to_string(),
+            email: "ada@example.com".to_string(),
+            bio: Some("x".repeat(501)),
+        };
+
+        let result = validate_create_profile_request(request);
+        assert!(result.is_err());
     }
 
     proptest! {

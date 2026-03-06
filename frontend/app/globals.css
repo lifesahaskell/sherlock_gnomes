@@ -203,6 +203,35 @@ textarea {
   gap: 0.35rem;
 }
 
+.profile-form {
+  display: grid;
+  gap: 0.35rem;
+  border: 1px solid var(--line);
+  border-radius: 0.7rem;
+  padding: 0.55rem;
+  background: #f9fcfd;
+}
+
+.profile-form h3 {
+  margin: 0;
+  font-size: 0.93rem;
+}
+
+.profile-output {
+  display: grid;
+  gap: 0.25rem;
+  border: 1px solid var(--line);
+  border-radius: 0.7rem;
+  padding: 0.55rem;
+  background: #fff;
+}
+
+.profile-output h3,
+.profile-output p {
+  margin: 0;
+  font-size: 0.88rem;
+}
+
 .index-card {
   display: grid;
   gap: 0.45rem;

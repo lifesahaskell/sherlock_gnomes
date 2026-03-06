@@ -18,6 +18,14 @@ CREATE TABLE IF NOT EXISTS indexed_files (
     updated_at timestamptz NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS user_profiles (
+    id bigserial PRIMARY KEY,
+    display_name text NOT NULL,
+    email text NOT NULL UNIQUE,
+    bio text NOT NULL DEFAULT '',
+    created_at timestamptz NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS semantic_blocks (
     id bigserial PRIMARY KEY,
     path text NOT NULL,

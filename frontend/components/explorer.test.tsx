@@ -7,6 +7,7 @@ import * as api from "@/lib/api";
 
 vi.mock("@/lib/api", () => ({
   askCodebase: vi.fn(),
+  createUserProfile: vi.fn(),
   getFile: vi.fn(),
   getHealth: vi.fn(),
   getIndexStatus: vi.fn(),
@@ -20,6 +21,7 @@ const mockedGetTree = vi.mocked(api.getTree);
 const mockedGetFile = vi.mocked(api.getFile);
 const mockedGetHealth = vi.mocked(api.getHealth);
 const mockedGetIndexStatus = vi.mocked(api.getIndexStatus);
+const mockedCreateUserProfile = vi.mocked(api.createUserProfile);
 const mockedSearchCode = vi.mocked(api.searchCode);
 const mockedSearchHybrid = vi.mocked(api.searchHybrid);
 const mockedStartIndexing = vi.mocked(api.startIndexing);
@@ -40,6 +42,13 @@ describe("Explorer", () => {
       current_job: null,
       pending: false,
       last_completed_job: null
+    });
+    mockedCreateUserProfile.mockResolvedValue({
+      id: 1,
+      display_name: "Ada Lovelace",
+      email: "ada@example.com",
+      bio: "Pioneer",
+      created_at: "2026-03-06T00:00:00Z"
     });
     mockedSearchCode.mockResolvedValue({ query: "alpha", matches: [] });
     mockedSearchHybrid.mockResolvedValue({ query: "alpha", warnings: [], matches: [] });
@@ -175,6 +184,30 @@ describe("Explorer", () => {
     await waitFor(() => {
       expect(mockedStartIndexing).toHaveBeenCalledTimes(1);
     });
+  });
+
+  it("creates a user profile and renders the created profile summary", async () => {
+    const user = userEvent.setup();
+
+    render(<Explorer />);
+
+    await user.type(screen.getByLabelText("Profile name"), " Ada Lovelace ");
+    await user.type(screen.getByLabelText("Profile email"), " ADA@EXAMPLE.COM ");
+    await user.type(screen.getByLabelText("Profile bio"), " Pioneer ");
+    await user.click(screen.getByRole("button", { name: "Create Profile" }));
+
+    await waitFor(() => {
+      expect(mockedCreateUserProfile).toHaveBeenCalledWith({
+        display_name: "Ada Lovelace",
+        email: "ADA@EXAMPLE.COM",
+        bio: "Pioneer"
+      });
+    });
+
+    expect(screen.getByText("Latest Profile")).toBeInTheDocument();
+    expect(screen.getByText("Ada Lovelace")).toBeInTheDocument();
+    expect(screen.getByText(/\(ada@example\.com\)/)).toBeInTheDocument();
+    expect(screen.getByText("Pioneer")).toBeInTheDocument();
   });
 
   it("validates question and context requirements before asking", async () => {

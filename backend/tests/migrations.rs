@@ -21,7 +21,12 @@ async fn migrations_create_expected_tables_and_indexes() {
         .await
         .expect("apply migrations");
 
-    for table in ["index_jobs", "indexed_files", "semantic_blocks"] {
+    for table in [
+        "index_jobs",
+        "indexed_files",
+        "semantic_blocks",
+        "user_profiles",
+    ] {
         let exists: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = $1)",
         )

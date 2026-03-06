@@ -84,6 +84,15 @@ pub struct IndexStatusView {
     pub last_completed_job: Option<IndexJobView>,
 }
 
+#[derive(Debug, Serialize, Clone)]
+pub struct UserProfile {
+    pub id: i64,
+    pub display_name: String,
+    pub email: String,
+    pub bio: String,
+    pub created_at: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct KeywordMatch {
     pub path: String,
@@ -113,12 +122,27 @@ pub enum SearchError {
     Message(String),
 }
 
+#[derive(Debug)]
+pub enum ProfileError {
+    DuplicateEmail,
+    Message(String),
+}
+
 impl SearchError {
     pub fn message(self) -> String {
         match self {
             Self::NoIndex => {
                 "no index exists yet; trigger indexing first with POST /api/index".to_string()
             }
+            Self::Message(message) => message,
+        }
+    }
+}
+
+impl ProfileError {
+    pub fn message(self) -> String {
+        match self {
+            Self::DuplicateEmail => "a profile with this email already exists".to_string(),
             Self::Message(message) => message,
         }
     }
@@ -213,6 +237,34 @@ impl IndexingService {
             pending: pending.is_some(),
             last_completed_job,
         })
+    }
+
+    pub async fn create_profile(
+        &self,
+        display_name: &str,
+        email: &str,
+        bio: &str,
+    ) -> Result<UserProfile, ProfileError> {
+        let row = sqlx::query(
+            "
+            INSERT INTO user_profiles (display_name, email, bio)
+            VALUES ($1, $2, $3)
+            RETURNING id, display_name, email, bio, created_at
+            ",
+        )
+        .bind(display_name)
+        .bind(email)
+        .bind(bio)
+        .fetch_one(&self.inner.pool)
+        .await
+        .map_err(|error| match &error {
+            sqlx::Error::Database(db_error) if db_error.code().as_deref() == Some("23505") => {
+                ProfileError::DuplicateEmail
+            }
+            _ => ProfileError::Message(format!("failed to create user profile: {error}")),
+        })?;
+
+        Ok(user_profile_from_row(row))
     }
 
     pub async fn keyword_search(
@@ -898,6 +950,18 @@ fn job_view_from_row(row: sqlx::postgres::PgRow) -> IndexJobView {
         files_indexed: row.get("files_indexed"),
         blocks_indexed: row.get("blocks_indexed"),
         error: row.get("error"),
+    }
+}
+
+fn user_profile_from_row(row: sqlx::postgres::PgRow) -> UserProfile {
+    let created_at: DateTime<Utc> = row.get("created_at");
+
+    UserProfile {
+        id: row.get("id"),
+        display_name: row.get("display_name"),
+        email: row.get("email"),
+        bio: row.get("bio"),
+        created_at: created_at.to_rfc3339(),
     }
 }
 
