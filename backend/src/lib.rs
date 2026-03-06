@@ -12,7 +12,7 @@ use axum::{
     routing::{get, post, put},
 };
 use serde::{Deserialize, Serialize};
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{CorsLayer, Any};
 
 mod indexing;
 
@@ -198,7 +198,12 @@ pub fn build_app_with_indexing_and_hybrid_toggle(
         .route("/api/profiles/{id}", put(update_profile))
         .route("/api/ask", post(ask))
         .with_state(state)
-        .layer(CorsLayer::permissive())
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any),
+        )
 }
 
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {

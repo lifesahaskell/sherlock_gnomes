@@ -28,6 +28,17 @@ fn get_request(uri: &str) -> Request<Body> {
         .expect("build GET request")
 }
 
+fn options_request(uri: &str, origin: &str) -> Request<Body> {
+    Request::builder()
+        .method("OPTIONS")
+        .uri(uri)
+        .header("origin", origin)
+        .header("access-control-request-method", "GET")
+        .header("access-control-request-headers", "content-type")
+        .body(Body::empty())
+        .expect("build OPTIONS request")
+}
+
 fn post_request(uri: &str, payload: Value) -> Request<Body> {
     Request::builder()
         .method("POST")
@@ -63,6 +74,53 @@ async fn health_returns_ok_and_root() {
     assert_eq!(payload["root_dir"], root.to_string_lossy().to_string());
     assert_eq!(payload["indexed_search_enabled"], false);
     assert_eq!(payload["hybrid_search_enabled"], true);
+}
+
+#[tokio::test]
+async fn health_supports_cors_preflight() {
+    let temp = tempdir().expect("create temp dir");
+    let app = build_app(temp.path().canonicalize().expect("canonicalize root"));
+
+    let preflight = app
+        .clone()
+        .oneshot(options_request("/health", "http://127.0.0.1:3000"))
+        .await
+        .expect("send OPTIONS request");
+
+    assert!(preflight.status().is_success());
+    let preflight_headers = preflight.headers();
+    let access_control_allow_origin = preflight_headers
+        .get("access-control-allow-origin")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(
+        access_control_allow_origin == "*" || access_control_allow_origin == "http://127.0.0.1:3000"
+    );
+    assert!(preflight_headers
+        .get("access-control-allow-methods")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .contains("GET"));
+    assert!(preflight_headers
+        .get("access-control-allow-headers")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_lowercase()
+        .contains("content-type"));
+
+    let health_response = app
+        .clone()
+        .oneshot(get_request("/health"))
+        .await
+        .expect("send health request");
+    assert_eq!(health_response.status(), StatusCode::OK);
+    let health_headers = health_response.headers();
+    assert!(health_headers
+        .get("access-control-allow-origin")
+        .is_some());
 }
 
 #[tokio::test]

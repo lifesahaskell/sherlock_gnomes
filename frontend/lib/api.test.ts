@@ -73,8 +73,12 @@ describe("api client", () => {
 
     await getHealth();
 
-    const calledUrl = new URL(String(mockFetch.mock.calls[0][0]));
+    const calledUrlValue = mockFetch.mock.calls[0][0] as string;
+    const calledOptions = mockFetch.mock.calls[0][1] as RequestInit | undefined;
+    const calledUrl = new URL(String(calledUrlValue));
     expect(calledUrl.pathname).toBe("/health");
+    const headers = new Headers(calledOptions?.headers as HeadersInit | undefined);
+    expect(headers.has("Content-Type")).toBe(false);
   });
 
   it("passes query, path, and limit for searchCode", async () => {
