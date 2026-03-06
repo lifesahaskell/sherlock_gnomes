@@ -19,6 +19,10 @@ services:
       HOST: 0.0.0.0
       PORT: 8787
       EXPLORER_ROOT: /workspace
+      EXPLORER_AUTH_DISABLED: ${EXPLORER_AUTH_DISABLED:-false}
+      EXPLORER_READ_API_KEY: ${EXPLORER_READ_API_KEY:-dev-read-key}
+      EXPLORER_ADMIN_API_KEY: ${EXPLORER_ADMIN_API_KEY:-dev-admin-key}
+      EXPLORER_ALLOWED_ORIGINS: ${EXPLORER_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
       DATABASE_URL: postgres://sherlock:sherlock@postgres:5432/sherlock
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-openai}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
@@ -37,9 +41,11 @@ services:
       dockerfile: frontend/Dockerfile
       args:
         NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-http://localhost:8787}
+        NEXT_PUBLIC_EXPLORER_READ_API_KEY: ${NEXT_PUBLIC_EXPLORER_READ_API_KEY:-dev-read-key}
     environment:
       PORT: 3000
       HOSTNAME: 0.0.0.0
+      NEXT_PUBLIC_EXPLORER_READ_API_KEY: ${NEXT_PUBLIC_EXPLORER_READ_API_KEY:-dev-read-key}
     depends_on:
       - backend
     ports:

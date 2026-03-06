@@ -10,7 +10,9 @@ WORKDIR /app/frontend
 COPY --from=deps /app/frontend/node_modules ./node_modules
 COPY frontend ./
 ARG NEXT_PUBLIC_API_BASE=http://localhost:8787
+ARG NEXT_PUBLIC_EXPLORER_READ_API_KEY=
 ENV NEXT_PUBLIC_API_BASE=$NEXT_PUBLIC_API_BASE
+ENV NEXT_PUBLIC_EXPLORER_READ_API_KEY=$NEXT_PUBLIC_EXPLORER_READ_API_KEY
 RUN npm run build
 
 FROM node:22-alpine AS runner

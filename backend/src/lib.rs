@@ -1,25 +1,39 @@
 use std::{
+    collections::{HashMap, VecDeque},
     env, fs,
     path::{Component, Path as StdPath, PathBuf},
     sync::Arc,
+    time::{Duration, Instant},
 };
 
 use axum::{
-    Json, Router,
-    extract::{Path as PathParam, Query, State},
-    http::StatusCode,
+    body::Body,
+    extract::{
+        DefaultBodyLimit,
+        Path as PathParam,
+        Query,
+        State,
+    },
+    http::{
+        header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue},
+        Method, Request, StatusCode,
+    },
+    middleware::{self, Next},
     response::IntoResponse,
     routing::{get, post, put},
+    Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use tower_http::cors::{CorsLayer, Any};
+use tokio::sync::Mutex;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 
 mod indexing;
 
 pub use indexing::fuzz_parse_semantic_blocks;
+pub use indexing::IndexingService;
 use indexing::{
-    EnqueueIndexResponse, HybridSearch, IndexJobView, IndexStatusView, IndexingService,
-    ProfileError, SearchError, UserProfile,
+    EnqueueIndexResponse, HybridSearch, IndexJobView, IndexStatusView, ProfileError, SearchError,
+    UserProfile,
 };
 
 #[derive(Clone)]
@@ -27,6 +41,27 @@ struct AppState {
     root_dir: Arc<PathBuf>,
     indexing: Option<Arc<IndexingService>>,
     hybrid_search_enabled: bool,
+    security: ApiSecurityConfig,
+    rate_limiter: Arc<RateLimiter>,
+}
+
+#[derive(Clone)]
+pub struct ApiSecurityConfig {
+    enforce_auth: bool,
+    read_api_key: Option<String>,
+    admin_api_key: Option<String>,
+    allowed_origins: Vec<HeaderValue>,
+}
+
+#[derive(Clone)]
+struct RateLimiter {
+    buckets: Arc<Mutex<HashMap<String, VecDeque<Instant>>>>,
+}
+
+#[derive(Clone, Copy)]
+enum ApiScope {
+    Read,
+    Admin,
 }
 
 #[derive(Serialize)]
@@ -36,6 +71,19 @@ struct HealthResponse {
     indexed_search_enabled: bool,
     hybrid_search_enabled: bool,
 }
+
+const API_BODY_LIMIT_BYTES: usize = 16 * 1024;
+const API_QUERY_MAX_CHARACTERS: usize = 2_048;
+const API_PATH_MAX_CHARACTERS: usize = 1_024;
+const API_QUESTION_MAX_CHARACTERS: usize = 2_000;
+const API_ASK_PATH_LIMIT: usize = 8;
+const SEARCH_LIMIT_DEFAULT: usize = 30;
+const SEARCH_LIMIT_MAX: usize = 100;
+const FILE_PREVIEW_LINES: usize = 30;
+const READ_RATELIMIT_PER_MINUTE: usize = 60;
+const ADMIN_RATELIMIT_PER_MINUTE: usize = 15;
+const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
+const DEFAULT_ALLOWED_ORIGINS: [&str; 2] = ["http://127.0.0.1:3000", "http://localhost:3000"];
 
 #[derive(Deserialize)]
 struct TreeQuery {
@@ -166,6 +214,92 @@ pub fn load_hybrid_search_enabled_from_env() -> bool {
         .unwrap_or(true)
 }
 
+pub fn load_api_security_config() -> ApiSecurityConfig {
+    let auth_disabled = env::var("EXPLORER_AUTH_DISABLED")
+        .ok()
+        .and_then(|value| parse_env_bool(&value))
+        .unwrap_or(false);
+
+    ApiSecurityConfig {
+        enforce_auth: !auth_disabled,
+        read_api_key: env::var("EXPLORER_READ_API_KEY")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| value.trim().to_string()),
+        admin_api_key: env::var("EXPLORER_ADMIN_API_KEY")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| value.trim().to_string()),
+        allowed_origins: load_allowed_origins_from_env(),
+    }
+}
+
+fn load_allowed_origins_from_env() -> Vec<HeaderValue> {
+    let from_env = env::var("EXPLORER_ALLOWED_ORIGINS")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    let configured = from_env
+        .map(|value| {
+            value
+                .split(',')
+                .map(|item| item.trim())
+                .filter(|item| !item.is_empty())
+                .filter_map(|item| item.parse::<HeaderValue>().ok())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    if configured.is_empty() {
+        default_allowed_origins()
+    } else {
+        configured
+    }
+}
+
+fn default_allowed_origins() -> Vec<HeaderValue> {
+    DEFAULT_ALLOWED_ORIGINS
+        .into_iter()
+        .map(|item| item.parse().expect("failed to parse default allowed origin"))
+        .collect()
+}
+
+pub fn validate_runtime_security_config(config: &ApiSecurityConfig) -> Result<(), String> {
+    if !config.enforce_auth {
+        return Ok(());
+    }
+
+    if config.read_api_key.is_none() {
+        return Err(
+            "EXPLORER_READ_API_KEY is required when authentication is enabled".to_string(),
+        );
+    }
+
+    if config.admin_api_key.is_none() {
+        return Err(
+            "EXPLORER_ADMIN_API_KEY is required when authentication is enabled".to_string(),
+        );
+    }
+
+    Ok(())
+}
+
+impl ApiSecurityConfig {
+    pub fn with_keys(read_api_key: impl Into<String>, admin_api_key: impl Into<String>) -> Self {
+        Self {
+            enforce_auth: true,
+            read_api_key: Some(read_api_key.into()),
+            admin_api_key: Some(admin_api_key.into()),
+            allowed_origins: default_allowed_origins(),
+        }
+    }
+
+    pub fn auth_enforced(&self) -> bool {
+        self.enforce_auth
+    }
+}
+
 pub fn build_app(root_dir: PathBuf) -> Router {
     build_app_with_indexing_and_hybrid_toggle(root_dir, None, true)
 }
@@ -179,12 +313,33 @@ pub fn build_app_with_indexing_and_hybrid_toggle(
     indexing: Option<IndexingService>,
     hybrid_search_enabled: bool,
 ) -> Router {
+    build_app_with_indexing_and_hybrid_toggle_and_security(
+        root_dir,
+        indexing,
+        hybrid_search_enabled,
+        load_api_security_config(),
+    )
+}
+
+pub fn build_app_with_indexing_and_hybrid_toggle_and_security(
+    root_dir: PathBuf,
+    indexing: Option<IndexingService>,
+    hybrid_search_enabled: bool,
+    security: ApiSecurityConfig,
+) -> Router {
     let root_dir = root_dir.canonicalize().unwrap_or(root_dir);
     let state = AppState {
         root_dir: Arc::new(root_dir),
         indexing: indexing.map(Arc::new),
         hybrid_search_enabled,
+        security: security.clone(),
+        rate_limiter: Arc::new(RateLimiter::new()),
     };
+    let api_key_header = HeaderName::from_static("x-api-key");
+    let cors = CorsLayer::new()
+        .allow_origin(AllowOrigin::list(state.security.allowed_origins.clone()))
+        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::OPTIONS])
+        .allow_headers([CONTENT_TYPE, AUTHORIZATION, api_key_header]);
 
     Router::new()
         .route("/health", get(health))
@@ -197,13 +352,197 @@ pub fn build_app_with_indexing_and_hybrid_toggle(
         .route("/api/profiles", get(list_profiles).post(create_profile))
         .route("/api/profiles/{id}", put(update_profile))
         .route("/api/ask", post(ask))
-        .with_state(state)
-        .layer(
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods(Any)
-                .allow_headers(Any),
-        )
+        .with_state(state.clone())
+        .route_layer(middleware::from_fn_with_state(
+            state,
+            enforce_auth_and_rate_limit,
+        ))
+        .layer(DefaultBodyLimit::max(API_BODY_LIMIT_BYTES))
+        .layer(cors)
+}
+
+async fn enforce_auth_and_rate_limit(
+    State(state): State<AppState>,
+    request: Request<Body>,
+    next: Next,
+) -> axum::response::Response {
+    if request.method() == Method::OPTIONS {
+        return next.run(request).await;
+    }
+
+    let path = request.uri().path();
+    let route_scope = api_scope_for_request(request.method(), path);
+
+    if let Some(scope) = route_scope {
+        if let Err(error) = validate_api_access(&state.security, request.headers(), scope) {
+            return error.into_response();
+        }
+
+        let identifier = request_client_id(&request);
+        let (limit, window) = match scope {
+            ApiScope::Read => (READ_RATELIMIT_PER_MINUTE, RATE_LIMIT_WINDOW),
+            ApiScope::Admin => (ADMIN_RATELIMIT_PER_MINUTE, RATE_LIMIT_WINDOW),
+        };
+
+        if !state
+            .rate_limiter
+            .check(scope.rate_limit_key(&identifier), limit, window)
+            .await
+        {
+            return AppError::too_many_requests("rate limit exceeded").into_response();
+        }
+    }
+
+    next.run(request).await
+}
+
+impl RateLimiter {
+    fn new() -> Self {
+        Self {
+            buckets: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    async fn check(&self, key: String, limit: usize, window: Duration) -> bool {
+        let now = Instant::now();
+        let mut buckets = self.buckets.lock().await;
+        let bucket = buckets.entry(key).or_default();
+
+        while let Some(oldest) = bucket.front().copied() {
+            if now.duration_since(oldest) <= window {
+                break;
+            }
+            bucket.pop_front();
+        }
+
+        if bucket.len() >= limit {
+            return false;
+        }
+
+        bucket.push_back(now);
+        true
+    }
+}
+
+impl ApiScope {
+    fn rate_limit_key(self, identifier: &str) -> String {
+        let scope = match self {
+            ApiScope::Read => "read",
+            ApiScope::Admin => "admin",
+        };
+        format!("{scope}:{identifier}")
+    }
+}
+
+fn api_scope_for_request(method: &Method, path: &str) -> Option<ApiScope> {
+    if !path.starts_with("/api/") {
+        return None;
+    }
+
+    if path == "/api/index" && *method == Method::POST {
+        return Some(ApiScope::Admin);
+    }
+
+    if path.starts_with("/api/profiles") {
+        return match *method {
+            Method::GET => Some(ApiScope::Read),
+            Method::POST | Method::PUT => Some(ApiScope::Admin),
+            _ => None,
+        };
+    }
+
+    Some(ApiScope::Read)
+}
+
+fn validate_api_access(
+    config: &ApiSecurityConfig,
+    headers: &HeaderMap,
+    scope: ApiScope,
+) -> Result<(), AppError> {
+    if !config.enforce_auth {
+        return Ok(());
+    }
+
+    let Some(provided) = provided_auth_credential(headers) else {
+        return Err(AppError::unauthorized("missing API credential"));
+    };
+
+    let matches_read = configured_key_matches(&config.read_api_key, provided);
+    let matches_admin = configured_key_matches(&config.admin_api_key, provided);
+
+    match scope {
+        ApiScope::Read => {
+            if matches_read || matches_admin {
+                Ok(())
+            } else {
+                Err(AppError::unauthorized("invalid API credential"))
+            }
+        }
+        ApiScope::Admin => {
+            if matches_admin {
+                Ok(())
+            } else if matches_read {
+                Err(AppError::forbidden("admin API key required"))
+            } else {
+                Err(AppError::unauthorized("invalid API credential"))
+            }
+        }
+    }
+}
+
+fn provided_auth_credential(headers: &HeaderMap) -> Option<&str> {
+    if let Some(api_key) = headers.get("x-api-key").and_then(|value| value.to_str().ok()) {
+        let trimmed = api_key.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed);
+        }
+    }
+
+    let auth_header = headers
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())?;
+    let token = auth_header
+        .strip_prefix("Bearer ")
+        .or_else(|| auth_header.strip_prefix("bearer "))?
+        .trim();
+
+    if token.is_empty() {
+        None
+    } else {
+        Some(token)
+    }
+}
+
+fn configured_key_matches(configured: &Option<String>, provided: &str) -> bool {
+    configured
+        .as_deref()
+        .is_some_and(|configured| configured == provided)
+}
+
+fn request_client_id(request: &Request<Body>) -> String {
+    if let Some(forwarded) = request
+        .headers()
+        .get("x-forwarded-for")
+        .and_then(|value| value.to_str().ok())
+    {
+        let first = forwarded.split(',').next().unwrap_or_default().trim();
+        if !first.is_empty() {
+            return first.to_string();
+        }
+    }
+
+    if let Some(real_ip) = request
+        .headers()
+        .get("x-real-ip")
+        .and_then(|value| value.to_str().ok())
+    {
+        let trimmed = real_ip.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+
+    "unknown".to_string()
 }
 
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
@@ -219,6 +558,7 @@ async fn get_tree(
     State(state): State<AppState>,
     Query(query): Query<TreeQuery>,
 ) -> Result<Json<TreeResponse>, AppError> {
+    validate_optional_relative_path(query.path.as_deref())?;
     let resolved = resolve_within_root(&state.root_dir, query.path.as_deref())?;
     if !resolved.is_dir() {
         return Err(AppError::bad_request("path is not a directory"));
@@ -259,6 +599,10 @@ async fn get_file(
     State(state): State<AppState>,
     Query(query): Query<FileQuery>,
 ) -> Result<Json<FileResponse>, AppError> {
+    if query.path.trim().is_empty() {
+        return Err(AppError::bad_request("path cannot be empty"));
+    }
+
     let resolved = resolve_within_root(&state.root_dir, Some(&query.path))?;
     if !resolved.is_file() {
         return Err(AppError::bad_request("path is not a file"));
@@ -285,16 +629,20 @@ async fn search(
     State(state): State<AppState>,
     Query(query): Query<SearchQuery>,
 ) -> Result<Json<SearchResponse>, AppError> {
-    let service = indexing_service(&state)?;
-
     let q = query.query.trim();
     if q.is_empty() {
         return Err(AppError::bad_request("query cannot be empty"));
     }
+    if q.chars().count() > API_QUERY_MAX_CHARACTERS {
+        return Err(AppError::bad_request(format!(
+            "query must be {API_QUERY_MAX_CHARACTERS} characters or fewer"
+        )));
+    }
 
     validate_filter_path(query.path.as_deref())?;
 
-    let limit = query.limit.unwrap_or(30).min(100);
+    let limit = validate_search_limit(query.limit)?;
+    let service = indexing_service(&state)?;
     let matches = service
         .keyword_search(q, query.path.as_deref(), limit)
         .await
@@ -321,16 +669,20 @@ async fn search_hybrid(
         return Err(AppError::not_found("hybrid search is disabled"));
     }
 
-    let service = indexing_service(&state)?;
-
     let q = query.query.trim();
     if q.is_empty() {
         return Err(AppError::bad_request("query cannot be empty"));
     }
+    if q.chars().count() > API_QUERY_MAX_CHARACTERS {
+        return Err(AppError::bad_request(format!(
+            "query must be {API_QUERY_MAX_CHARACTERS} characters or fewer"
+        )));
+    }
 
     validate_filter_path(query.path.as_deref())?;
 
-    let limit = query.limit.unwrap_or(30).min(100);
+    let limit = validate_search_limit(query.limit)?;
+    let service = indexing_service(&state)?;
     let HybridSearch { warnings, matches } = service
         .hybrid_search(q, query.path.as_deref(), limit)
         .await
@@ -432,15 +784,25 @@ async fn ask(
     if question.is_empty() {
         return Err(AppError::bad_request("question cannot be empty"));
     }
+    if question.chars().count() > API_QUESTION_MAX_CHARACTERS {
+        return Err(AppError::bad_request(format!(
+            "question must be {API_QUESTION_MAX_CHARACTERS} characters or fewer"
+        )));
+    }
 
     if request.paths.is_empty() {
         return Err(AppError::bad_request(
             "paths cannot be empty; provide files to build context",
         ));
     }
+    if request.paths.len() > API_ASK_PATH_LIMIT {
+        return Err(AppError::bad_request(format!(
+            "paths must include at most {API_ASK_PATH_LIMIT} entries"
+        )));
+    }
 
     let mut context = Vec::new();
-    for path in request.paths.iter().take(8) {
+    for path in request.paths.iter().take(API_ASK_PATH_LIMIT) {
         let resolved = resolve_within_root(&state.root_dir, Some(path))?;
         if !resolved.is_file() {
             continue;
@@ -450,7 +812,7 @@ async fn ask(
         };
         let preview = content
             .lines()
-            .take(30)
+            .take(FILE_PREVIEW_LINES)
             .collect::<Vec<_>>()
             .join("\n")
             .trim()
@@ -586,6 +948,12 @@ fn is_likely_email(value: &str) -> bool {
 
 fn validate_filter_path(path: Option<&str>) -> Result<(), AppError> {
     if let Some(value) = path {
+        if value.chars().count() > API_PATH_MAX_CHARACTERS {
+            return Err(AppError::bad_request(format!(
+                "path must be {API_PATH_MAX_CHARACTERS} characters or fewer"
+            )));
+        }
+
         let relative = StdPath::new(value);
         if relative.is_absolute() || contains_parent_dir(relative) {
             return Err(AppError::bad_request(
@@ -601,6 +969,12 @@ fn resolve_within_root(root: &StdPath, requested: Option<&str>) -> Result<PathBu
     match requested {
         None => Ok(root.to_path_buf()),
         Some(path) => {
+            if path.chars().count() > API_PATH_MAX_CHARACTERS {
+                return Err(AppError::bad_request(format!(
+                    "path must be {API_PATH_MAX_CHARACTERS} characters or fewer"
+                )));
+            }
+
             let relative = StdPath::new(path);
             if relative.is_absolute() || contains_parent_dir(relative) {
                 return Err(AppError::bad_request(
@@ -640,6 +1014,27 @@ fn to_relative_path(root: &StdPath, full_path: &StdPath) -> Result<String, AppEr
         .map_err(|_| AppError::internal("failed to compute relative path"))
 }
 
+fn validate_optional_relative_path(path: Option<&str>) -> Result<(), AppError> {
+    if let Some(value) = path {
+        if value.chars().count() > API_PATH_MAX_CHARACTERS {
+            return Err(AppError::bad_request(format!(
+                "path must be {API_PATH_MAX_CHARACTERS} characters or fewer"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_search_limit(limit: Option<usize>) -> Result<usize, AppError> {
+    match limit {
+        None => Ok(SEARCH_LIMIT_DEFAULT),
+        Some(value) if (1..=SEARCH_LIMIT_MAX).contains(&value) => Ok(value),
+        Some(_) => Err(AppError::bad_request(format!(
+            "limit must be between 1 and {SEARCH_LIMIT_MAX}"
+        ))),
+    }
+}
+
 #[derive(Debug)]
 struct AppError {
     status: StatusCode,
@@ -661,6 +1056,20 @@ impl AppError {
         }
     }
 
+    fn unauthorized(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            message: message.into(),
+        }
+    }
+
+    fn forbidden(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            message: message.into(),
+        }
+    }
+
     fn not_found(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::NOT_FOUND,
@@ -678,6 +1087,13 @@ impl AppError {
     fn internal(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: message.into(),
+        }
+    }
+
+    fn too_many_requests(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::TOO_MANY_REQUESTS,
             message: message.into(),
         }
     }

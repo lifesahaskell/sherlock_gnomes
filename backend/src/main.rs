@@ -1,8 +1,9 @@
 use std::{env, net::SocketAddr, sync::Arc};
 
 use codebase_explorer_backend::{
-    build_app_with_indexing_and_hybrid_toggle, load_hybrid_search_enabled_from_env,
-    load_indexing_from_env, load_root_dir_from_env,
+    build_app_with_indexing_and_hybrid_toggle_and_security, load_api_security_config,
+    load_hybrid_search_enabled_from_env, load_indexing_from_env, load_root_dir_from_env,
+    validate_runtime_security_config,
 };
 
 #[tokio::main]
@@ -13,6 +14,9 @@ async fn main() {
         .await
         .expect("failed to initialize indexing subsystem");
     let hybrid_search_enabled = load_hybrid_search_enabled_from_env();
+    let security = load_api_security_config();
+    validate_runtime_security_config(&security)
+        .expect("invalid security configuration for runtime startup");
     let host = env::var("HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
     let port = env::var("PORT")
         .ok()
@@ -30,13 +34,23 @@ async fn main() {
     if !hybrid_search_enabled {
         println!("Hybrid search disabled: HYBRID_SEARCH_ENABLED is false");
     }
+    if security.auth_enforced() {
+        println!("API authentication enabled for all /api/* routes");
+    } else {
+        println!("API authentication disabled: EXPLORER_AUTH_DISABLED=true");
+    }
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .expect("failed to bind TCP listener");
     axum::serve(
         listener,
-        build_app_with_indexing_and_hybrid_toggle(root_dir, indexing, hybrid_search_enabled),
+        build_app_with_indexing_and_hybrid_toggle_and_security(
+            root_dir,
+            indexing,
+            hybrid_search_enabled,
+            security,
+        ),
     )
     .await
     .expect("server failed");

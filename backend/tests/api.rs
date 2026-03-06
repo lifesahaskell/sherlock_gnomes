@@ -1,11 +1,12 @@
-use std::{fs, sync::Arc, time::Duration};
+use std::{fs, path::PathBuf, sync::Arc, time::Duration};
 
 use axum::{
     body::Body,
     http::{Request, StatusCode},
+    Router,
 };
 use codebase_explorer_backend::{
-    build_app, build_app_with_indexing, build_app_with_indexing_and_hybrid_toggle,
+    ApiSecurityConfig, IndexingService, build_app_with_indexing_and_hybrid_toggle_and_security,
     load_indexing_from_env,
 };
 use http_body_util::BodyExt;
@@ -15,15 +16,58 @@ use sqlx::PgPool;
 use tempfile::tempdir;
 use tower::ServiceExt;
 
+const TEST_READ_API_KEY: &str = "test-read-api-key";
+const TEST_ADMIN_API_KEY: &str = "test-admin-api-key";
+
 async fn body_json(body: Body) -> Value {
     let bytes = body.collect().await.expect("collect body bytes").to_bytes();
     serde_json::from_slice(&bytes).expect("parse response JSON")
+}
+
+fn build_app(root_dir: PathBuf) -> Router {
+    build_app_with_indexing_and_hybrid_toggle_and_security(
+        root_dir,
+        None,
+        true,
+        ApiSecurityConfig::with_keys(TEST_READ_API_KEY, TEST_ADMIN_API_KEY),
+    )
+}
+
+fn build_app_with_indexing(root_dir: PathBuf, indexing: Option<IndexingService>) -> Router {
+    build_app_with_indexing_and_hybrid_toggle_and_security(
+        root_dir,
+        indexing,
+        true,
+        ApiSecurityConfig::with_keys(TEST_READ_API_KEY, TEST_ADMIN_API_KEY),
+    )
+}
+
+fn build_app_with_indexing_and_hybrid_toggle(
+    root_dir: PathBuf,
+    indexing: Option<IndexingService>,
+    hybrid_search_enabled: bool,
+) -> Router {
+    build_app_with_indexing_and_hybrid_toggle_and_security(
+        root_dir,
+        indexing,
+        hybrid_search_enabled,
+        ApiSecurityConfig::with_keys(TEST_READ_API_KEY, TEST_ADMIN_API_KEY),
+    )
+}
+
+fn unauthenticated_get_request(uri: &str) -> Request<Body> {
+    Request::builder()
+        .method("GET")
+        .uri(uri)
+        .body(Body::empty())
+        .expect("build GET request")
 }
 
 fn get_request(uri: &str) -> Request<Body> {
     Request::builder()
         .method("GET")
         .uri(uri)
+        .header("x-api-key", TEST_READ_API_KEY)
         .body(Body::empty())
         .expect("build GET request")
 }
@@ -43,6 +87,26 @@ fn post_request(uri: &str, payload: Value) -> Request<Body> {
     Request::builder()
         .method("POST")
         .uri(uri)
+        .header("x-api-key", TEST_ADMIN_API_KEY)
+        .header("content-type", "application/json")
+        .body(Body::from(payload.to_string()))
+        .expect("build POST request")
+}
+
+fn post_request_with_key(uri: &str, payload: Value, api_key: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("x-api-key", api_key)
+        .header("content-type", "application/json")
+        .body(Body::from(payload.to_string()))
+        .expect("build POST request")
+}
+
+fn unauthenticated_post_request(uri: &str, payload: Value) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri)
         .header("content-type", "application/json")
         .body(Body::from(payload.to_string()))
         .expect("build POST request")
@@ -52,6 +116,7 @@ fn put_request(uri: &str, payload: Value) -> Request<Body> {
     Request::builder()
         .method("PUT")
         .uri(uri)
+        .header("x-api-key", TEST_ADMIN_API_KEY)
         .header("content-type", "application/json")
         .body(Body::from(payload.to_string()))
         .expect("build PUT request")
@@ -94,9 +159,7 @@ async fn health_supports_cors_preflight() {
         .unwrap()
         .to_str()
         .unwrap();
-    assert!(
-        access_control_allow_origin == "*" || access_control_allow_origin == "http://127.0.0.1:3000"
-    );
+    assert_eq!(access_control_allow_origin, "http://127.0.0.1:3000");
     assert!(preflight_headers
         .get("access-control-allow-methods")
         .unwrap()
@@ -117,10 +180,69 @@ async fn health_supports_cors_preflight() {
         .await
         .expect("send health request");
     assert_eq!(health_response.status(), StatusCode::OK);
-    let health_headers = health_response.headers();
-    assert!(health_headers
+}
+
+#[tokio::test]
+async fn api_cors_rejects_unknown_origin_preflight() {
+    let temp = tempdir().expect("create temp dir");
+    let app = build_app(temp.path().canonicalize().expect("canonicalize root"));
+
+    let preflight = app
+        .oneshot(options_request("/api/search", "https://evil.example"))
+        .await
+        .expect("send OPTIONS request");
+
+    assert_eq!(preflight.status(), StatusCode::OK);
+    assert!(preflight
+        .headers()
         .get("access-control-allow-origin")
-        .is_some());
+        .is_none());
+}
+
+#[tokio::test]
+async fn api_requires_authentication_and_health_stays_public() {
+    let temp = tempdir().expect("create temp dir");
+    fs::write(temp.path().join("notes.txt"), "Hello").expect("write text file");
+    let app = build_app(temp.path().canonicalize().expect("canonicalize root"));
+
+    let unauthenticated_file = app
+        .clone()
+        .oneshot(unauthenticated_get_request("/api/file?path=notes.txt"))
+        .await
+        .expect("send unauthenticated file request");
+    assert_eq!(unauthenticated_file.status(), StatusCode::UNAUTHORIZED);
+
+    let unauthenticated_index = app
+        .clone()
+        .oneshot(unauthenticated_post_request("/api/index", json!({})))
+        .await
+        .expect("send unauthenticated index request");
+    assert_eq!(unauthenticated_index.status(), StatusCode::UNAUTHORIZED);
+
+    let unauthenticated_health = app
+        .oneshot(unauthenticated_get_request("/health"))
+        .await
+        .expect("send unauthenticated health request");
+    assert_eq!(unauthenticated_health.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn read_key_cannot_access_admin_endpoints() {
+    let temp = tempdir().expect("create temp dir");
+    let app = build_app(temp.path().canonicalize().expect("canonicalize root"));
+
+    let forbidden = app
+        .clone()
+        .oneshot(post_request_with_key("/api/index", json!({}), TEST_READ_API_KEY))
+        .await
+        .expect("send read-key admin request");
+    assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+
+    let admin = app
+        .oneshot(post_request("/api/index", json!({})))
+        .await
+        .expect("send admin-key admin request");
+    assert_eq!(admin.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
 
 #[tokio::test]
@@ -425,10 +547,36 @@ async fn ask_rejects_empty_question_and_empty_paths() {
 }
 
 #[tokio::test]
-async fn ask_caps_context_to_eight_files_and_truncates_preview_lines() {
+async fn ask_rejects_more_than_eight_paths() {
+    let temp = tempdir().expect("create temp dir");
+    let mut too_many_paths = Vec::new();
+    for index in 0..10 {
+        let path = format!("file_{index}.txt");
+        let content = (1..=40)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(temp.path().join(&path), content).expect("write context file");
+        too_many_paths.push(path);
+    }
+
+    let app = build_app(temp.path().canonicalize().expect("canonicalize root"));
+    let response = app
+        .oneshot(post_request(
+            "/api/ask",
+            json!({"question": "Summarize the files", "paths": too_many_paths}),
+        ))
+        .await
+        .expect("send ask request");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn ask_truncates_preview_lines_for_valid_payload() {
     let temp = tempdir().expect("create temp dir");
     let mut paths = Vec::new();
-    for index in 0..10 {
+    for index in 0..8 {
         let path = format!("file_{index}.txt");
         let content = (1..=40)
             .map(|line| format!("line {line}"))
@@ -461,6 +609,59 @@ async fn ask_caps_context_to_eight_files_and_truncates_preview_lines() {
     for entry in context {
         let preview = entry["preview"].as_str().expect("preview text");
         assert!(preview.lines().count() <= 30);
+    }
+}
+
+#[tokio::test]
+async fn api_rejects_oversized_or_overlong_requests() {
+    let temp = tempdir().expect("create temp dir");
+    fs::write(temp.path().join("context.txt"), "line").expect("write context file");
+    let app = build_app(temp.path().canonicalize().expect("canonicalize root"));
+
+    let oversized_body = json!({
+        "question": "q",
+        "paths": ["context.txt"],
+        "padding": "x".repeat(20_000)
+    });
+    let oversized = app
+        .clone()
+        .oneshot(post_request("/api/ask", oversized_body))
+        .await
+        .expect("send oversized ask request");
+    assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+    let long_query = "q".repeat(2_049);
+    let query_response = app
+        .clone()
+        .oneshot(get_request(&format!("/api/search?query={long_query}")))
+        .await
+        .expect("send long query request");
+    assert_eq!(query_response.status(), StatusCode::BAD_REQUEST);
+
+    let long_path = "a".repeat(1_025);
+    let path_response = app
+        .oneshot(get_request(&format!("/api/file?path={long_path}")))
+        .await
+        .expect("send long path request");
+    assert_eq!(path_response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn read_endpoints_are_rate_limited() {
+    let temp = tempdir().expect("create temp dir");
+    let app = build_app(temp.path().canonicalize().expect("canonicalize root"));
+
+    for request_count in 0..61 {
+        let response = app
+            .clone()
+            .oneshot(get_request("/api/tree"))
+            .await
+            .expect("send tree request");
+        if request_count < 60 {
+            assert_eq!(response.status(), StatusCode::OK);
+        } else {
+            assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        }
     }
 }
 
@@ -738,6 +939,153 @@ async fn indexed_search_and_hybrid_work_with_database() {
         .as_array()
         .expect("hybrid matches array");
     assert!(!hybrid_matches.is_empty());
+}
+
+#[tokio::test]
+#[serial]
+async fn indexing_skips_sensitive_files_by_default_and_allows_override() {
+    let Some(test_database_url) = std::env::var("TEST_DATABASE_URL").ok() else {
+        return;
+    };
+
+    let temp = tempdir().expect("create temp dir");
+    fs::write(temp.path().join(".env"), "APP_SECRET=very-secret").expect("write .env");
+    fs::write(temp.path().join("private.pem"), "pem-secret").expect("write pem");
+    fs::write(temp.path().join("visible.rs"), "fn visible() {}").expect("write visible file");
+    let root = temp.path().canonicalize().expect("canonicalize root");
+
+    // SAFETY: This test opts into environment mutation and is gated by TEST_DATABASE_URL.
+    unsafe {
+        std::env::set_var("DATABASE_URL", &test_database_url);
+        std::env::set_var("EMBEDDING_PROVIDER", "mock");
+        std::env::set_var("EXPLORER_INDEX_INCLUDE_SENSITIVE_FILES", "false");
+    }
+
+    let indexing = load_indexing_from_env(Arc::new(root.clone()))
+        .await
+        .expect("load indexing from env")
+        .expect("indexing service should be configured");
+
+    let pool = PgPool::connect(&test_database_url)
+        .await
+        .expect("connect test database");
+    sqlx::query("TRUNCATE TABLE semantic_blocks, indexed_files, index_jobs RESTART IDENTITY")
+        .execute(&pool)
+        .await
+        .expect("truncate index tables");
+
+    let app = build_app_with_indexing(root, Some(indexing));
+
+    let start = app
+        .clone()
+        .oneshot(post_request("/api/index", json!({})))
+        .await
+        .expect("send index start request");
+    assert_eq!(start.status(), StatusCode::ACCEPTED);
+
+    let mut completed = false;
+    for _ in 0..30 {
+        let status_response = app
+            .clone()
+            .oneshot(get_request("/api/index/status"))
+            .await
+            .expect("send index status request");
+        assert_eq!(status_response.status(), StatusCode::OK);
+        let status_payload = body_json(status_response.into_body()).await;
+        let current_status = status_payload
+            .get("current_job")
+            .and_then(|current| current.get("status"))
+            .and_then(Value::as_str);
+        let last_status = status_payload
+            .get("last_completed_job")
+            .and_then(|current| current.get("status"))
+            .and_then(Value::as_str);
+
+        if matches!(current_status, Some("running" | "queued")) {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            continue;
+        }
+        if let Some("succeeded") = last_status {
+            completed = true;
+            break;
+        }
+        if let Some("failed") = last_status {
+            panic!("indexing job failed: {status_payload}");
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(completed, "indexing did not complete within timeout");
+
+    let env_indexed: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM indexed_files WHERE path = '.env')")
+            .fetch_one(&pool)
+            .await
+            .expect("query .env index presence");
+    let pem_indexed: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM indexed_files WHERE path = 'private.pem')")
+            .fetch_one(&pool)
+            .await
+            .expect("query .pem index presence");
+    assert!(!env_indexed);
+    assert!(!pem_indexed);
+
+    // SAFETY: Same serial test mutates environment for explicit override validation.
+    unsafe {
+        std::env::set_var("EXPLORER_INDEX_INCLUDE_SENSITIVE_FILES", "true");
+    }
+
+    let start_override = app
+        .clone()
+        .oneshot(post_request("/api/index", json!({})))
+        .await
+        .expect("send override index start request");
+    assert_eq!(start_override.status(), StatusCode::ACCEPTED);
+
+    let mut override_completed = false;
+    for _ in 0..30 {
+        let status_response = app
+            .clone()
+            .oneshot(get_request("/api/index/status"))
+            .await
+            .expect("send index status request");
+        assert_eq!(status_response.status(), StatusCode::OK);
+        let status_payload = body_json(status_response.into_body()).await;
+        let current_status = status_payload
+            .get("current_job")
+            .and_then(|current| current.get("status"))
+            .and_then(Value::as_str);
+        let last_status = status_payload
+            .get("last_completed_job")
+            .and_then(|current| current.get("status"))
+            .and_then(Value::as_str);
+
+        if matches!(current_status, Some("running" | "queued")) {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            continue;
+        }
+        if let Some("succeeded") = last_status {
+            override_completed = true;
+            break;
+        }
+        if let Some("failed") = last_status {
+            panic!("override indexing job failed: {status_payload}");
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(override_completed, "override indexing did not complete within timeout");
+
+    let env_indexed_after_override: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM indexed_files WHERE path = '.env')")
+            .fetch_one(&pool)
+            .await
+            .expect("query .env index presence after override");
+    let pem_indexed_after_override: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM indexed_files WHERE path = 'private.pem')")
+            .fetch_one(&pool)
+            .await
+            .expect("query .pem index presence after override");
+    assert!(env_indexed_after_override);
+    assert!(pem_indexed_after_override);
 }
 
 #[tokio::test]

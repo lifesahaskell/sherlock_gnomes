@@ -16,10 +16,12 @@ import {
 describe("api client", () => {
   beforeEach(() => {
     vi.stubGlobal("fetch", vi.fn());
+    vi.stubEnv("NEXT_PUBLIC_EXPLORER_READ_API_KEY", "frontend-read-key");
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
   });
 
   it("encodes path for getTree", async () => {
@@ -79,6 +81,7 @@ describe("api client", () => {
     expect(calledUrl.pathname).toBe("/health");
     const headers = new Headers(calledOptions?.headers as HeadersInit | undefined);
     expect(headers.has("Content-Type")).toBe(false);
+    expect(headers.has("X-API-Key")).toBe(false);
   });
 
   it("passes query, path, and limit for searchCode", async () => {
@@ -128,14 +131,16 @@ describe("api client", () => {
 
     await askCodebase("What changed?", ["src/main.rs"]);
 
-    expect(mockFetch).toHaveBeenCalledWith(
-      "http://127.0.0.1:8787/api/ask",
-      expect.objectContaining({
-        method: "POST",
-        body: JSON.stringify({ question: "What changed?", paths: ["src/main.rs"] }),
-        headers: expect.objectContaining({ "Content-Type": "application/json" })
-      })
+    const calledUrlValue = mockFetch.mock.calls[0][0] as string;
+    const calledOptions = mockFetch.mock.calls[0][1] as RequestInit;
+    expect(calledUrlValue).toBe("http://127.0.0.1:8787/api/ask");
+    expect(calledOptions.method).toBe("POST");
+    expect(calledOptions.body).toBe(
+      JSON.stringify({ question: "What changed?", paths: ["src/main.rs"] })
     );
+    const headers = new Headers(calledOptions.headers as HeadersInit | undefined);
+    expect(headers.get("Content-Type")).toBe("application/json");
+    expect(headers.get("X-API-Key")).toBe("frontend-read-key");
   });
 
   it("sends JSON POST body for startIndexing", async () => {
@@ -149,14 +154,14 @@ describe("api client", () => {
 
     await startIndexing();
 
-    expect(mockFetch).toHaveBeenCalledWith(
-      "http://127.0.0.1:8787/api/index",
-      expect.objectContaining({
-        method: "POST",
-        body: JSON.stringify({}),
-        headers: expect.objectContaining({ "Content-Type": "application/json" })
-      })
-    );
+    const calledUrlValue = mockFetch.mock.calls[0][0] as string;
+    const calledOptions = mockFetch.mock.calls[0][1] as RequestInit;
+    expect(calledUrlValue).toBe("http://127.0.0.1:8787/api/index");
+    expect(calledOptions.method).toBe("POST");
+    expect(calledOptions.body).toBe(JSON.stringify({}));
+    const headers = new Headers(calledOptions.headers as HeadersInit | undefined);
+    expect(headers.get("Content-Type")).toBe("application/json");
+    expect(headers.get("X-API-Key")).toBe("frontend-read-key");
   });
 
   it("calls index status endpoint", async () => {
@@ -205,18 +210,20 @@ describe("api client", () => {
       bio: "Pioneer"
     });
 
-    expect(mockFetch).toHaveBeenCalledWith(
-      "http://127.0.0.1:8787/api/profiles",
-      expect.objectContaining({
-        method: "POST",
-        body: JSON.stringify({
-          display_name: "Ada",
-          email: "ada@example.com",
-          bio: "Pioneer"
-        }),
-        headers: expect.objectContaining({ "Content-Type": "application/json" })
+    const calledUrlValue = mockFetch.mock.calls[0][0] as string;
+    const calledOptions = mockFetch.mock.calls[0][1] as RequestInit;
+    expect(calledUrlValue).toBe("http://127.0.0.1:8787/api/profiles");
+    expect(calledOptions.method).toBe("POST");
+    expect(calledOptions.body).toBe(
+      JSON.stringify({
+        display_name: "Ada",
+        email: "ada@example.com",
+        bio: "Pioneer"
       })
     );
+    const headers = new Headers(calledOptions.headers as HeadersInit | undefined);
+    expect(headers.get("Content-Type")).toBe("application/json");
+    expect(headers.get("X-API-Key")).toBe("frontend-read-key");
   });
 
   it("loads user profiles", async () => {
@@ -271,18 +278,20 @@ describe("api client", () => {
       bio: "Pioneer"
     });
 
-    expect(mockFetch).toHaveBeenCalledWith(
-      "http://127.0.0.1:8787/api/profiles/1",
-      expect.objectContaining({
-        method: "PUT",
-        body: JSON.stringify({
-          display_name: "Ada",
-          email: "ada@example.com",
-          bio: "Pioneer"
-        }),
-        headers: expect.objectContaining({ "Content-Type": "application/json" })
+    const calledUrlValue = mockFetch.mock.calls[0][0] as string;
+    const calledOptions = mockFetch.mock.calls[0][1] as RequestInit;
+    expect(calledUrlValue).toBe("http://127.0.0.1:8787/api/profiles/1");
+    expect(calledOptions.method).toBe("PUT");
+    expect(calledOptions.body).toBe(
+      JSON.stringify({
+        display_name: "Ada",
+        email: "ada@example.com",
+        bio: "Pioneer"
       })
     );
+    const headers = new Headers(calledOptions.headers as HeadersInit | undefined);
+    expect(headers.get("Content-Type")).toBe("application/json");
+    expect(headers.get("X-API-Key")).toBe("frontend-read-key");
   });
 
   it("throws backend error message when request is not ok", async () => {

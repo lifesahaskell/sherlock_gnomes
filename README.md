@@ -42,6 +42,20 @@ Indexed search and indexing endpoints (require `DATABASE_URL`):
 - `GET /api/search?query=<text>&path=<relative_prefix>&limit=<n>`
 - `GET /api/search/hybrid?query=<text>&path=<relative_prefix>&limit=<n>`
 
+Authentication:
+
+- `GET /health` is public.
+- All `/api/*` routes require credentials by default (`EXPLORER_AUTH_DISABLED=false`).
+- Send credentials using `X-API-Key: <key>` (preferred) or `Authorization: Bearer <key>`.
+- Read endpoints accept read/admin keys; admin endpoints (`POST /api/index`, `POST/PUT /api/profiles*`) require the admin key.
+
+Common auth/abuse status codes:
+
+- `401` missing or invalid credentials
+- `403` read key provided for an admin-only endpoint
+- `413` request body exceeds size limit
+- `429` request rate limit exceeded
+
 Feature toggle:
 
 - `HYBRID_SEARCH_ENABLED=false` disables `GET /api/search/hybrid`, which then returns `404` with `"hybrid search is disabled"`.
@@ -49,6 +63,11 @@ Feature toggle:
 Path traversal is blocked (`..` and absolute paths are rejected), and all reads are restricted to `EXPLORER_ROOT`.
 
 `GET /api/search` and `GET /api/search/hybrid` return `409` until at least one successful index exists.
+
+Indexing defaults:
+
+- Hidden files and sensitive files are excluded from indexing by default.
+- Set `EXPLORER_INDEX_INCLUDE_SENSITIVE_FILES=true` only when you intentionally need to include them.
 
 ## Run locally
 
@@ -69,6 +88,8 @@ docker run --name sherlock-postgres \
 cd backend
 DATABASE_URL=postgres://sherlock:sherlock@127.0.0.1:5432/sherlock \
 EXPLORER_ROOT=.. \
+EXPLORER_READ_API_KEY=dev-read-key \
+EXPLORER_ADMIN_API_KEY=dev-admin-key \
 OPENAI_API_KEY=your_key_here \
 cargo run
 ```
@@ -78,6 +99,11 @@ Optional env vars:
 - `HOST` (default: `127.0.0.1`)
 - `PORT` (default: `8787`)
 - `EXPLORER_ROOT` (default: current directory)
+- `EXPLORER_AUTH_DISABLED` (default: `false`; set `true` only for explicit local/dev opt-out)
+- `EXPLORER_READ_API_KEY` (required when auth is enabled; grants read scope)
+- `EXPLORER_ADMIN_API_KEY` (required when auth is enabled; grants admin scope)
+- `EXPLORER_ALLOWED_ORIGINS` (comma-separated CORS allowlist; defaults to localhost frontend origins)
+- `EXPLORER_INDEX_INCLUDE_SENSITIVE_FILES` (default: `false`; includes hidden/sensitive files when `true`)
 - `DATABASE_URL` (required for `/api/index*` and `/api/search*`)
 - `HYBRID_SEARCH_ENABLED` (default: `true`; set to `false` to disable `/api/search/hybrid`)
 - `EMBEDDING_PROVIDER` (default: `openai`; `mock` is available for local/testing)
@@ -89,7 +115,9 @@ Optional env vars:
 ```bash
 cd frontend
 npm install
-NEXT_PUBLIC_API_BASE=http://127.0.0.1:8787 npm run dev
+NEXT_PUBLIC_API_BASE=http://127.0.0.1:8787 \
+NEXT_PUBLIC_EXPLORER_READ_API_KEY=dev-read-key \
+npm run dev
 ```
 
 Open `http://127.0.0.1:3000`.
@@ -100,6 +128,7 @@ Use the UI `Start/Reindex` button or call the API:
 
 ```bash
 curl -X POST http://127.0.0.1:8787/api/index \
+  -H 'x-api-key: your_admin_api_key' \
   -H 'content-type: application/json' \
   -d '{}'
 ```
@@ -107,7 +136,8 @@ curl -X POST http://127.0.0.1:8787/api/index \
 Poll status:
 
 ```bash
-curl http://127.0.0.1:8787/api/index/status
+curl http://127.0.0.1:8787/api/index/status \
+  -H 'x-api-key: your_read_api_key'
 ```
 
 ## Deployment (Docker Compose)
@@ -134,6 +164,9 @@ Optional overrides:
 
 ```bash
 NEXT_PUBLIC_API_BASE=http://localhost:8787 \
+NEXT_PUBLIC_EXPLORER_READ_API_KEY=your_read_api_key \
+EXPLORER_READ_API_KEY=your_read_api_key \
+EXPLORER_ADMIN_API_KEY=your_admin_api_key \
 OPENAI_API_KEY=your_key_here \
 EMBEDDING_PROVIDER=openai \
 docker compose up --build -d

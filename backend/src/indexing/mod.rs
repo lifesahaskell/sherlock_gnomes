@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     env, fs,
-    path::PathBuf,
+    path::{Component, Path, PathBuf},
     sync::Arc,
 };
 
@@ -25,6 +25,11 @@ static MIGRATOR: Migrator = sqlx::migrate!();
 const MAX_INDEXED_FILE_BYTES: u64 = 2_000_000;
 const EMBEDDING_BATCH_SIZE: usize = 32;
 const RRF_K: f64 = 60.0;
+const INDEX_INCLUDE_SENSITIVE_FILES_ENV: &str = "EXPLORER_INDEX_INCLUDE_SENSITIVE_FILES";
+const SENSITIVE_EXTENSIONS: [&str; 7] = ["pem", "key", "p12", "pfx", "crt", "cer", "der"];
+const SENSITIVE_PATH_SEGMENTS: [&str; 3] = [".ssh", ".aws", ".gnupg"];
+const SENSITIVE_FILENAME_TOKENS: [&str; 5] =
+    ["secret", "token", "credential", "password", "passwd"];
 
 #[derive(Clone)]
 pub struct IndexingService {
@@ -613,10 +618,11 @@ impl IndexingService {
         job_id: Uuid,
         known_hashes: &HashMap<String, String>,
     ) -> Result<Vec<ChangedFile>, String> {
+        let include_sensitive_files = include_sensitive_files_in_index();
         let mut builder = ignore::WalkBuilder::new(self.inner.root_dir.as_ref());
         builder
             .standard_filters(true)
-            .hidden(false)
+            .hidden(!include_sensitive_files)
             .git_ignore(true);
 
         let mut changed_files = Vec::new();
@@ -630,6 +636,10 @@ impl IndexingService {
 
             let path = entry.path();
             if !path.is_file() {
+                continue;
+            }
+
+            if !include_sensitive_files && is_sensitive_path(path) {
                 continue;
             }
 
@@ -1072,6 +1082,54 @@ fn apply_enqueue(queue: &mut QueueState, job_id: Uuid) -> EnqueueDecision {
     }
 }
 
+fn include_sensitive_files_in_index() -> bool {
+    env::var(INDEX_INCLUDE_SENSITIVE_FILES_ENV)
+        .ok()
+        .and_then(|value| parse_env_bool(&value))
+        .unwrap_or(false)
+}
+
+fn parse_env_bool(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn is_sensitive_path(path: &Path) -> bool {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if file_name == ".env" || file_name.starts_with(".env.") {
+        return true;
+    }
+
+    if SENSITIVE_FILENAME_TOKENS
+        .iter()
+        .any(|token| file_name.contains(token))
+    {
+        return true;
+    }
+
+    if let Some(extension) = path.extension().and_then(|ext| ext.to_str()) {
+        let extension = extension.to_ascii_lowercase();
+        if SENSITIVE_EXTENSIONS.contains(&extension.as_str()) {
+            return true;
+        }
+    }
+
+    path.components().any(|component| match component {
+        Component::Normal(part) => {
+            let segment = part.to_string_lossy().to_ascii_lowercase();
+            SENSITIVE_PATH_SEGMENTS.contains(&segment.as_str())
+        }
+        _ => false,
+    })
+}
+
 #[doc(hidden)]
 // Keep this function in the library crate so the standalone fuzz target in backend/fuzz
 // can call it directly without introducing fuzzing dependencies into the runtime backend.
@@ -1142,5 +1200,15 @@ mod tests {
         assert_eq!(decision.replaced_pending, Some(previous_pending));
         assert_eq!(queue.running, Some(running_job));
         assert_eq!(queue.pending, Some(newer_pending));
+    }
+
+    #[test]
+    fn sensitive_path_detection_catches_expected_defaults() {
+        assert!(is_sensitive_path(Path::new(".env")));
+        assert!(is_sensitive_path(Path::new("nested/.env.production")));
+        assert!(is_sensitive_path(Path::new("keys/id_rsa.pem")));
+        assert!(is_sensitive_path(Path::new(".aws/credentials")));
+        assert!(is_sensitive_path(Path::new("config/service-token.txt")));
+        assert!(!is_sensitive_path(Path::new("src/lib.rs")));
     }
 }

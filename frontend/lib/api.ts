@@ -98,17 +98,21 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const hasRequestBody = init?.body !== undefined;
   const needsJsonHeader =
     hasRequestBody || method === "POST" || method === "PUT" || method === "PATCH";
-  const headers =
-    hasRequestBody || needsJsonHeader
-      ? {
-          "Content-Type": "application/json",
-          ...(init?.headers ?? {})
-        }
-      : init?.headers;
+  const headers = new Headers(init?.headers ?? undefined);
 
+  if (needsJsonHeader) {
+    headers.set("Content-Type", "application/json");
+  }
+
+  const readApiKey = process.env.NEXT_PUBLIC_EXPLORER_READ_API_KEY?.trim();
+  if (path.startsWith("/api/") && readApiKey) {
+    headers.set("X-API-Key", readApiKey);
+  }
+
+  const hasHeaders = headers.keys().next().done === false;
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
-    ...(headers ? { headers } : {})
+    ...(hasHeaders ? { headers } : {})
   });
 
   if (!response.ok) {
