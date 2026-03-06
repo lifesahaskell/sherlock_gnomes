@@ -75,6 +75,9 @@ jobs:
       EMBEDDING_PROVIDER: mock
       EMBEDDING_MODEL: text-embedding-3-small
       NEXT_PUBLIC_API_BASE: http://localhost:8787
+      NEXT_PUBLIC_EXPLORER_READ_API_KEY: dev-read-key
+      EXPLORER_READ_API_KEY: dev-read-key
+      EXPLORER_ADMIN_API_KEY: dev-admin-key
       OPENAI_API_KEY: ""
       BACKEND_BASE_URL: http://127.0.0.1:8787
       FRONTEND_BASE_URL: http://127.0.0.1:3000

@@ -6,6 +6,8 @@ FRONTEND_BASE_URL="${FRONTEND_BASE_URL:-http://127.0.0.1:3000}"
 WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-180}"
 INDEX_TIMEOUT_SECONDS="${INDEX_TIMEOUT_SECONDS:-420}"
 POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-3}"
+INTEGRATION_READ_API_KEY="${INTEGRATION_READ_API_KEY:-${EXPLORER_READ_API_KEY:-dev-read-key}}"
+INTEGRATION_ADMIN_API_KEY="${INTEGRATION_ADMIN_API_KEY:-${EXPLORER_ADMIN_API_KEY:-dev-admin-key}}"
 
 log_step() {
   printf '\n[integration] %s\n' "$*"
@@ -51,14 +53,28 @@ wait_for_http_ok() {
   done
 }
 
+curl_with_api_key() {
+  local api_key="$1"
+  shift
+
+  local curl_args=("$@")
+  if [[ -n "$api_key" ]]; then
+    curl_args+=(-H "x-api-key: ${api_key}")
+  fi
+
+  "${curl_args[@]}"
+}
+
 http_get_json() {
-  curl -fsS --connect-timeout 2 --max-time 20 "$1"
+  local url="$1"
+  curl_with_api_key "$INTEGRATION_READ_API_KEY" curl -fsS --connect-timeout 2 --max-time 20 "$url"
 }
 
 http_post_json() {
   local url="$1"
   local payload="$2"
-  curl -fsS --connect-timeout 2 --max-time 20 -X POST "$url" -H 'content-type: application/json' --data "$payload"
+  local api_key="${INTEGRATION_ADMIN_API_KEY:-$INTEGRATION_READ_API_KEY}"
+  curl_with_api_key "$api_key" curl -fsS --connect-timeout 2 --max-time 20 -X POST "$url" -H 'content-type: application/json' --data "$payload"
 }
 
 pretty_print_json() {
