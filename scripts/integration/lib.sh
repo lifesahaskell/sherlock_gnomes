@@ -93,7 +93,23 @@ payload = os.environ["JSON_INPUT"]
 expression = os.environ["JSON_EXPR"]
 
 data = json.loads(payload)
-ok = bool(eval(expression, {"__builtins__": {}}, {"data": data}))
+# Keep eval constrained while allowing common assertion helpers used in scripts.
+safe_globals = {"__builtins__": {}}
+safe_locals = {
+    "data": data,
+    "any": any,
+    "all": all,
+    "len": len,
+    "isinstance": isinstance,
+    "list": list,
+    "dict": dict,
+    "tuple": tuple,
+    "str": str,
+    "int": int,
+    "float": float,
+    "bool": bool,
+}
+ok = bool(eval(expression, safe_globals, safe_locals))
 sys.exit(0 if ok else 1)
 PY
 }
