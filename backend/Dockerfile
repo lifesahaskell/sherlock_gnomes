@@ -1,11 +1,11 @@
-FROM rust:1-bookworm AS builder
+FROM rust:1.93-slim AS builder
 
 WORKDIR /app
 COPY backend ./backend
 WORKDIR /app/backend
 RUN cargo build --release
 
-FROM debian:bookworm-slim AS runtime
+FROM debian:trixie-slim AS runtime
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
