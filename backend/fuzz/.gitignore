@@ -1,3 +1,5 @@
 artifacts
 coverage
+corpus/parse_semantic_blocks/*
+!corpus/parse_semantic_blocks/seed
 target

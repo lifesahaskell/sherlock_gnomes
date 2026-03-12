@@ -7,4 +7,6 @@ target
 .env.local
 *.log
 frontend/coverage
+backend/mutants.out
+backend/mutants.out.old
 .codex/
