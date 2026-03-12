@@ -19,13 +19,15 @@ function getSessionSecret(): string {
   return secret;
 }
 
-export const sessionOptions = {
-  password: getSessionSecret(),
-  cookieName: "sherlock_session",
-  cookieOptions: {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax" as const,
-    maxAge: 86400, // 24 hours in seconds
-  },
-};
+export function getSessionOptions() {
+  return {
+    password: getSessionSecret(),
+    cookieName: "sherlock_session",
+    cookieOptions: {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax" as const,
+      maxAge: 86400, // 24 hours in seconds
+    },
+  };
+}

@@ -20,8 +20,6 @@ mod embeddings;
 
 use embeddings::{EmbeddingProvider, provider_from_env};
 
-static MIGRATOR: Migrator = sqlx::migrate!();
-
 const MAX_INDEXED_FILE_BYTES: u64 = 2_000_000;
 const EMBEDDING_BATCH_SIZE: usize = 32;
 const RRF_K: f64 = 60.0;
@@ -170,7 +168,9 @@ impl IndexingService {
             .await
             .map_err(|error| format!("failed to connect to DATABASE_URL: {error}"))?;
 
-        MIGRATOR
+        load_migrator()
+            .await
+            .map_err(|error| format!("failed to load database migrations: {error}"))?
             .run(&pool)
             .await
             .map_err(|error| format!("failed to run database migrations: {error}"))?;
@@ -957,6 +957,10 @@ impl IndexingService {
 
         Ok(row.map(job_view_from_row))
     }
+}
+
+async fn load_migrator() -> Result<Migrator, sqlx::migrate::MigrateError> {
+    Migrator::new(Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations")).await
 }
 
 #[derive(Debug)]

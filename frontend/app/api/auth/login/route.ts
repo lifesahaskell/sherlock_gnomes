@@ -5,7 +5,7 @@ import { verifyCredentials } from "@/lib/auth";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { validateOrigin } from "@/lib/csrf";
 import { requestClientId } from "@/lib/request-client-id";
-import { sessionOptions, type SessionData } from "@/lib/session";
+import { getSessionOptions, type SessionData } from "@/lib/session";
 
 type LoginPayload = {
   username: string;
@@ -51,7 +51,7 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   // Create iron-session
   const cookieStore = await cookies();
-  const session = await getIronSession<SessionData>(cookieStore, sessionOptions);
+  const session = await getIronSession<SessionData>(cookieStore, getSessionOptions());
   session.username = username.trim();
   session.loggedInAt = Date.now();
   await session.save();

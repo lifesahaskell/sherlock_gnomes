@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
 // Mock iron-session's getIronSession
 const mockGetIronSession = vi.fn();
@@ -95,6 +95,33 @@ describe("auth middleware", () => {
     expect(response.status).toBe(307);
     expect(response.headers.get("location")).toContain("/login");
     expect(mockDestroy).toHaveBeenCalled();
+  });
+
+  it("preserves the session clearing cookie on expiry redirects", async () => {
+    const expiredTimestamp = Date.now() - 25 * 60 * 60 * 1000;
+
+    mockGetIronSession.mockImplementation(async (_request: unknown, response: Response) => ({
+      username: "admin",
+      loggedInAt: expiredTimestamp,
+      destroy: () => {
+        response.headers.append(
+          "set-cookie",
+          "sherlock_session=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax"
+        );
+      },
+    }));
+
+    const { middleware } = await import("./middleware");
+    const request = new NextRequest(new URL("http://localhost/explorer"));
+
+    const response = await middleware(request);
+    expect(response.status).toBe(307);
+    expect(response.headers.get("set-cookie")).toContain("sherlock_session=");
+    expect(mockGetIronSession).toHaveBeenCalledWith(
+      request,
+      expect.any(NextResponse),
+      expect.objectContaining({ cookieName: "sherlock_session" })
+    );
   });
 
   it("skips auth entirely when LOGIN_AUTH_DISABLED is true", async () => {

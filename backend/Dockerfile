@@ -13,6 +13,7 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY --from=builder /app/backend/target/release/codebase-explorer-backend /usr/local/bin/codebase-explorer-backend
+COPY backend/migrations /app/backend/migrations
 
 ENV HOST=0.0.0.0
 ENV PORT=8787

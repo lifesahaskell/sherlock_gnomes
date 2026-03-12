@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use sqlx::PgPool;
 
 fn test_database_url() -> Option<String> {
@@ -16,7 +18,9 @@ async fn migrations_create_expected_tables_and_indexes() {
         .await
         .expect("connect migration test database");
 
-    sqlx::migrate!("./migrations")
+    sqlx::migrate::Migrator::new(Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+        .await
+        .expect("load migrations")
         .run(&pool)
         .await
         .expect("apply migrations");

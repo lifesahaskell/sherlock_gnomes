@@ -343,6 +343,25 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
+    fn assert_block_starts_and_substrings(
+        blocks: &[ParsedBlock],
+        expected_starts: &[i32],
+        expected_substrings: &[&str],
+    ) {
+        let starts = blocks
+            .iter()
+            .map(|block| block.start_line)
+            .collect::<Vec<_>>();
+        assert_eq!(starts, expected_starts);
+
+        for expected in expected_substrings {
+            assert!(
+                blocks.iter().any(|block| block.content.contains(expected)),
+                "missing block containing {expected:?}: {blocks:#?}",
+            );
+        }
+    }
+
     #[test]
     fn fallback_windowing_creates_multiple_blocks_for_large_text() {
         let text = (1..=300)
@@ -362,6 +381,65 @@ mod tests {
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0].start_line, 1);
         assert_eq!(blocks[1].start_line, 3);
+    }
+
+    #[test]
+    fn rust_files_use_tree_sitter_blocks_instead_of_fallback_windowing() {
+        let text = "struct Thing;\n\nfn answer() -> i32 {\n    42\n}\n\nconst VALUE: i32 = 1;\n";
+        let blocks = parse_semantic_blocks("src/lib.rs", text);
+
+        assert_block_starts_and_substrings(
+            &blocks,
+            &[1, 3, 7],
+            &["struct Thing", "fn answer()", "const VALUE"],
+        );
+    }
+
+    #[test]
+    fn typescript_file_extensions_use_typescript_parser() {
+        let text = "interface User {\n    name: string;\n}\n\nfunction greet(user: User): string {\n    return user.name;\n}\n\ntype Greeter = (user: User) => string;\n";
+
+        for path in ["client.ts", "client.mts", "client.cts"] {
+            let blocks = parse_semantic_blocks(path, text);
+            assert_block_starts_and_substrings(
+                &blocks,
+                &[1, 5, 9],
+                &["interface User", "function greet", "type Greeter"],
+            );
+        }
+    }
+
+    #[test]
+    fn tsx_files_use_tsx_parser() {
+        let text = "type Props = { name: string };\n\nfunction Greeting(props: Props) {\n    return <section>{props.name}</section>;\n}\n\nconst Footer = () => <footer>done</footer>;\n";
+        let blocks = parse_semantic_blocks("component.tsx", text);
+
+        assert_block_starts_and_substrings(
+            &blocks,
+            &[1, 3, 7],
+            &["type Props", "function Greeting", "<footer>done</footer>"],
+        );
+    }
+
+    #[test]
+    fn javascript_file_extensions_use_javascript_parser() {
+        let text =
+            "function greet(name) {\n    return `hi ${name}`;\n}\nconst answer = () => 42;\n";
+
+        for path in ["client.js", "client.mjs", "client.cjs"] {
+            let blocks = parse_semantic_blocks(path, text);
+            assert_block_starts_and_substrings(&blocks, &[1, 4], &["function greet", "() => 42"]);
+        }
+    }
+
+    #[test]
+    fn markdown_file_extensions_use_heading_boundaries() {
+        let text = "# Intro\na\n## Details\nb\n";
+
+        for path in ["docs/readme.md", "docs/readme.mdx"] {
+            let blocks = parse_semantic_blocks(path, text);
+            assert_block_starts_and_substrings(&blocks, &[1, 3], &["# Intro", "## Details"]);
+        }
     }
 
     #[test]

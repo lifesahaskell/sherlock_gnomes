@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getIronSession } from "iron-session";
 import { cookies } from "next/headers";
 import { validateOrigin } from "@/lib/csrf";
-import { sessionOptions, type SessionData } from "@/lib/session";
+import { getSessionOptions, type SessionData } from "@/lib/session";
 
 const DEFAULT_BACKEND_BASE = "http://127.0.0.1:8787";
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
@@ -84,7 +84,7 @@ export async function ensureAuthenticatedRequest(
   }
 
   const cookieStore = await cookies();
-  const session = await getIronSession<SessionData>(cookieStore, sessionOptions);
+  const session = await getIronSession<SessionData>(cookieStore, getSessionOptions());
 
   if (!session.username) {
     return jsonError(401, "Authentication required.");
