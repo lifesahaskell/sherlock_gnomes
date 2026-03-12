@@ -3,6 +3,7 @@
 import React from "react";
 import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import CodeView from "@/components/code-view";
 import {
   AskResponse,
   GitRepository,
@@ -60,7 +61,9 @@ export default function Explorer() {
   const [entries, setEntries] = useState<TreeEntry[]>([]);
 
   const [selectedFile, setSelectedFile] = useState("");
+  const [selectedFilePath, setSelectedFilePath] = useState("");
   const [fileContent, setFileContent] = useState("");
+  const [fileLanguage, setFileLanguage] = useState<string | null>(null);
 
   const [searchMode, setSearchMode] = useState<SearchMode>("hybrid");
   const [searchQuery, setSearchQuery] = useState("");
@@ -234,7 +237,9 @@ export default function Explorer() {
       setError("");
       const response = await getFile(path);
       setSelectedFile(response.path);
+      setSelectedFilePath(response.path);
       setFileContent(response.content);
+      setFileLanguage(null);
       setContextPaths((prev) =>
         prev.includes(response.path) ? prev : [response.path, ...prev].slice(0, 8)
       );
@@ -267,7 +272,9 @@ export default function Explorer() {
       const response = await getGitRepositoryFile(repositoryId, path);
       const repository = gitRepositories.find((item) => item.id === repositoryId);
       setSelectedFile(repository ? `${repository.name}:${response.path}` : response.path);
+      setSelectedFilePath(response.path);
       setFileContent(response.content);
+      setFileLanguage(response.language);
       setSelectedGitRepositoryId(repositoryId);
     } catch (err) {
       setError((err as Error).message);
@@ -498,9 +505,21 @@ export default function Explorer() {
             <h2>File Viewer</h2>
             <span className="subtle">{selectedFile || "No file selected"}</span>
           </div>
-          <pre className="code-view">
-            {busy.file ? "Loading file..." : fileContent || "Pick a file on the left."}
-          </pre>
+          {busy.file ? (
+            <div className="code-view-shell">
+              <pre className="code-view code-view-placeholder">Loading file...</pre>
+            </div>
+          ) : selectedFile ? (
+            <CodeView
+              code={fileContent}
+              path={selectedFilePath || selectedFile}
+              language={fileLanguage}
+            />
+          ) : (
+            <div className="code-view-shell">
+              <pre className="code-view code-view-placeholder">Pick a file on the left.</pre>
+            </div>
+          )}
         </section>
 
         <aside className="card side-card">

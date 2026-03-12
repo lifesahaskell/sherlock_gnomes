@@ -147,7 +147,8 @@ describe("Explorer", () => {
     await waitFor(() => {
       expect(mockedGetFile).toHaveBeenCalledWith("main.rs");
     });
-    expect(screen.getByText(/fn main\(\) \{\}/)).toBeInTheDocument();
+    expect(screen.getByText("Rust")).toBeInTheDocument();
+    expect(screen.getByLabelText("Code viewer")).toHaveTextContent("fn main() {}");
     expect(screen.getByText("Context files: 1/8")).toBeInTheDocument();
   });
 
@@ -320,7 +321,8 @@ describe("Explorer", () => {
     await waitFor(() => {
       expect(mockedGetGitRepositoryFile).toHaveBeenCalledWith("repo-1", "src/lib.rs");
     });
-    expect(screen.getByText(/pub fn answer/)).toBeInTheDocument();
+    expect(screen.getByText("Rust")).toBeInTheDocument();
+    expect(screen.getByLabelText("Code viewer")).toHaveTextContent("pub fn answer");
     expect(screen.getByText("sample-repo:src/lib.rs")).toBeInTheDocument();
   });
 

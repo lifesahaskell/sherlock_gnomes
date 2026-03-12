@@ -341,18 +341,100 @@ textarea {
   align-items: center;
 }
 
-.code-view {
+.code-view-shell {
   margin: 0.65rem 0 0;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 0.8rem;
+  background: #0f1720;
+  border: 1px solid #1e2936;
+}
+
+.code-view-meta {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0.55rem 0.7rem 0;
+}
+
+.code-language-tag {
+  border-radius: 999px;
+  border: 1px solid #35536d;
+  padding: 0.14rem 0.5rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #9cc7f0;
+  background: rgba(24, 48, 69, 0.7);
+}
+
+.code-view {
+  margin: 0;
   flex: 1;
   overflow: auto;
   white-space: pre;
-  background: #0f1720;
   color: #d5e3f2;
-  border-radius: 0.8rem;
-  padding: 0.95rem;
+  padding: 0.8rem 0.95rem 0.95rem;
   font-family: "IBM Plex Mono", "Consolas", monospace;
   font-size: 0.86rem;
   line-height: 1.45;
+}
+
+.code-view code {
+  display: block;
+  min-width: max-content;
+}
+
+.code-view-placeholder,
+.code-view-empty {
+  color: #8fa5ba;
+}
+
+.code-line {
+  display: block;
+}
+
+.code-token.token-comment {
+  color: #7d8e9d;
+  font-style: italic;
+}
+
+.code-token.token-keyword {
+  color: #f7b267;
+  font-weight: 600;
+}
+
+.code-token.token-type {
+  color: #7dd3fc;
+}
+
+.code-token.token-string {
+  color: #a7f3a1;
+}
+
+.code-token.token-number {
+  color: #f9c74f;
+}
+
+.code-token.token-literal {
+  color: #fda4af;
+  font-weight: 600;
+}
+
+.code-token.token-property {
+  color: #8bd3ff;
+}
+
+.code-token.token-meta {
+  color: #d8b4fe;
+}
+
+.code-token.token-heading {
+  color: #fde68a;
+  font-weight: 700;
 }
 
 .search-form,
