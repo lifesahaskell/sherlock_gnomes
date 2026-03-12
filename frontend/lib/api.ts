@@ -73,6 +73,7 @@ export type GitRepositoryLanguageStat = {
 export type GitRepository = {
   id: string;
   path: string;
+  source_kind: "local" | "remote";
   name: string;
   head_commit: string;
   branch: string | null;
@@ -227,10 +228,10 @@ export function getIndexStatus(): Promise<IndexStatusResponse> {
   return fetchJson<IndexStatusResponse>("/api/index/status");
 }
 
-export function importGitRepository(path: string): Promise<GitRepository> {
+export function importGitRepository(source: string): Promise<GitRepository> {
   return fetchJson<GitRepository>("/api/git/repositories/import", {
     method: "POST",
-    body: JSON.stringify({ path })
+    body: JSON.stringify({ source })
   });
 }
 

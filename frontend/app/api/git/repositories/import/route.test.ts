@@ -48,7 +48,7 @@ describe("POST /api/git/repositories/import", () => {
     const request = new Request("http://localhost/api/git/repositories/import", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ path: "sample-repo" })
+      body: JSON.stringify({ source: "sample-repo" })
     });
     const response = await POST(request);
 
@@ -57,7 +57,7 @@ describe("POST /api/git/repositories/import", () => {
     const [url, options] = mockFetch.mock.calls[0];
     expect(String(url)).toBe("http://backend:8787/api/git/repositories/import");
     expect((options as RequestInit).method).toBe("POST");
-    expect((options as RequestInit).body).toBe(JSON.stringify({ path: "sample-repo" }));
+    expect((options as RequestInit).body).toBe(JSON.stringify({ source: "sample-repo" }));
     const headers = new Headers((options as RequestInit).headers as HeadersInit | undefined);
     expect(headers.get("x-api-key")).toBe("admin-key");
     expect(headers.get("content-type")).toBe("application/json");

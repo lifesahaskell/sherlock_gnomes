@@ -93,6 +93,7 @@ describe("Explorer", () => {
     mockedImportGitRepository.mockResolvedValue({
       id: "repo-1",
       path: "sample-repo",
+      source_kind: "local",
       name: "sample-repo",
       head_commit: "abc12345",
       branch: "main",
@@ -244,7 +245,7 @@ describe("Explorer", () => {
     });
   });
 
-  it("imports a git repository and loads its stored tree", async () => {
+  it("imports a remote git repository and loads its stored tree", async () => {
     const user = userEvent.setup();
     mockedGetGitRepositoryTree.mockResolvedValue({
       path: "",
@@ -253,20 +254,48 @@ describe("Explorer", () => {
         { name: "README.md", path: "README.md", kind: "file" }
       ]
     });
+    mockedImportGitRepository.mockResolvedValueOnce({
+      id: "repo-2",
+      path: "https://github.com/example/sample-repo.git",
+      source_kind: "remote",
+      name: "sample-repo",
+      head_commit: "def67890",
+      branch: "main",
+      is_dirty: false,
+      tracked_file_count: 3,
+      stored_file_count: 2,
+      skipped_binary_files: 1,
+      skipped_large_files: 0,
+      total_bytes: 42,
+      analysis_summary: "Stored 2 text files from commit def67890 on branch main.",
+      imported_at: "2026-03-12T00:00:00Z",
+      languages: [
+        { language: "Markdown", file_count: 1, total_bytes: 12 },
+        { language: "Rust", file_count: 1, total_bytes: 30 }
+      ]
+    });
 
     render(<Explorer />);
 
-    await user.clear(screen.getByLabelText("Git repository path"));
-    await user.type(screen.getByLabelText("Git repository path"), "sample-repo");
+    await user.clear(screen.getByLabelText("Git repository source"));
+    await user.type(
+      screen.getByLabelText("Git repository source"),
+      "https://github.com/example/sample-repo.git"
+    );
     await user.click(screen.getByRole("button", { name: "Import Repository" }));
 
     await waitFor(() => {
-      expect(mockedImportGitRepository).toHaveBeenCalledWith("sample-repo");
+      expect(mockedImportGitRepository).toHaveBeenCalledWith(
+        "https://github.com/example/sample-repo.git"
+      );
     });
     await waitFor(() => {
-      expect(mockedGetGitRepositoryTree).toHaveBeenCalledWith("repo-1", "");
+      expect(mockedGetGitRepositoryTree).toHaveBeenCalledWith("repo-2", "");
     });
-    expect(screen.getByText("Stored 2 text files from commit abc12345 on branch main.")).toBeInTheDocument();
+    expect(screen.getByText("Remote repository")).toBeInTheDocument();
+    expect(
+      screen.getByText("Stored 2 text files from commit def67890 on branch main.")
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "README.md" })).toBeInTheDocument();
   });
 
@@ -276,6 +305,7 @@ describe("Explorer", () => {
       {
         id: "repo-1",
         path: "sample-repo",
+        source_kind: "local",
         name: "sample-repo",
         head_commit: "abc12345",
         branch: "main",

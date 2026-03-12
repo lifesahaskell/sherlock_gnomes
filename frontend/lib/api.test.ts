@@ -198,6 +198,7 @@ describe("api client", () => {
         JSON.stringify({
           id: "repo-1",
           path: "sample-repo",
+          source_kind: "local",
           name: "sample-repo",
           head_commit: "abc123",
           branch: "main",
@@ -224,7 +225,7 @@ describe("api client", () => {
     const calledOptions = mockFetch.mock.calls[0][1] as RequestInit;
     expect(calledUrlValue).toBe("/api/git/repositories/import");
     expect(calledOptions.method).toBe("POST");
-    expect(calledOptions.body).toBe(JSON.stringify({ path: "sample-repo" }));
+    expect(calledOptions.body).toBe(JSON.stringify({ source: "sample-repo" }));
     const headers = new Headers(calledOptions.headers as HeadersInit | undefined);
     expect(headers.get("Content-Type")).toBe("application/json");
   });

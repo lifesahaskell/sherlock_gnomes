@@ -633,17 +633,17 @@ export default function Explorer() {
               </button>
             </div>
             <p className="subtle">
-              Import tracked text files from a git repository under the configured explorer root and
-              store them in Postgres.
+              Import tracked text files from either a local repository under the explorer root or a
+              remote Git URL and store them in Postgres.
             </p>
             <form className="search-form" onSubmit={submitGitRepositoryImport}>
-              <label htmlFor="git-repository-path">Git repository path</label>
+              <label htmlFor="git-repository-path">Git repository source</label>
               <div className="row">
                 <input
                   id="git-repository-path"
                   value={repositoryImportPath}
                   onChange={(event) => setRepositoryImportPath(event.target.value)}
-                  placeholder="., apps/service, libs/core"
+                  placeholder="., apps/service, https://github.com/org/repo.git"
                 />
                 <button type="submit" disabled={busy.repository}>
                   {busy.repository ? "Importing..." : "Import Repository"}
@@ -663,6 +663,7 @@ export default function Explorer() {
                     >
                       <strong>{repository.name}</strong>
                     </button>
+                    <p>{repository.source_kind === "remote" ? "Remote repository" : "Local repository"}</p>
                     <p>{repository.path || "."}</p>
                     <p>{repository.analysis_summary}</p>
                   </li>
@@ -672,6 +673,10 @@ export default function Explorer() {
             {selectedGitRepository ? (
               <>
                 <p className="subtle">
+                  {selectedGitRepository.source_kind === "remote"
+                    ? "Remote source"
+                    : "Local source"}{" "}
+                  ·{" "}
                   {selectedGitRepository.branch
                     ? `${selectedGitRepository.branch} · `
                     : ""}

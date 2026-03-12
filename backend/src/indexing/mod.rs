@@ -30,6 +30,7 @@ const SENSITIVE_PATH_SEGMENTS: [&str; 3] = [".ssh", ".aws", ".gnupg"];
 const SENSITIVE_FILENAME_TOKENS: [&str; 5] =
     ["secret", "token", "credential", "password", "passwd"];
 const GIT_REPOSITORY_SUMMARY_COMMIT_LENGTH: usize = 8;
+const REMOTE_GIT_URL_PREFIXES: [&str; 5] = ["https://", "http://", "ssh://", "git://", "file://"];
 
 #[derive(Clone)]
 pub struct IndexingService {
@@ -47,6 +48,12 @@ struct IndexingInner {
 struct QueueState {
     running: Option<Uuid>,
     pending: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum GitRepositorySourceKind {
+    Local,
+    Remote,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -109,6 +116,7 @@ pub struct GitRepositoryLanguageStatView {
 pub struct GitRepositoryView {
     pub id: String,
     pub path: String,
+    pub source_kind: String,
     pub name: String,
     pub head_commit: String,
     pub branch: Option<String>,
@@ -389,34 +397,25 @@ impl IndexingService {
 
     pub async fn import_git_repository(
         &self,
-        candidate_dir: &Path,
+        source: &str,
     ) -> Result<GitRepositoryView, GitRepositoryError> {
-        let repo_root = self.resolve_git_repository_root(candidate_dir).await?;
-        let repository_path =
-            to_relative(&repo_root, self.inner.root_dir.as_ref()).ok_or_else(|| {
-                GitRepositoryError::Invalid(
-                    "path does not point to a git repository inside EXPLORER_ROOT".to_string(),
-                )
-            })?;
-        let repository_name = repo_root
-            .file_name()
-            .and_then(|name| name.to_str())
-            .filter(|name| !name.is_empty())
-            .unwrap_or("root")
-            .to_string();
-        let head_commit = self.git_stdout(&repo_root, &["rev-parse", "HEAD"]).await?;
+        let resolved = self.prepare_git_repository_import(source).await?;
+        let repo_root = &resolved.repo_root;
+        let repository_name =
+            repository_name_from_git_source(&resolved.source, resolved.source_kind, repo_root);
+        let head_commit = self.git_stdout(repo_root, &["rev-parse", "HEAD"]).await?;
         let branch = self
-            .git_stdout(&repo_root, &["branch", "--show-current"])
+            .git_stdout(repo_root, &["branch", "--show-current"])
             .await?
             .trim()
             .to_string();
         let is_dirty = !self
-            .git_stdout(&repo_root, &["status", "--porcelain"])
+            .git_stdout(repo_root, &["status", "--porcelain"])
             .await?
             .trim()
             .is_empty();
         let tracked_paths_output = self
-            .git_output_bytes(&repo_root, &["ls-files", "-z"])
+            .git_output_bytes(repo_root, &["ls-files", "-z"])
             .await?;
         let tracked_paths = tracked_paths_output
             .split(|byte| *byte == 0)
@@ -500,7 +499,7 @@ impl IndexingService {
 
         let repository_id = self
             .persist_git_repository(PersistGitRepositoryRequest {
-                path: repository_path,
+                path: resolved.source,
                 name: repository_name,
                 head_commit,
                 branch: (!branch.is_empty()).then_some(branch),
@@ -1327,10 +1326,117 @@ impl IndexingService {
         Ok(row.map(job_view_from_row))
     }
 
+    async fn prepare_git_repository_import(
+        &self,
+        source: &str,
+    ) -> Result<ResolvedGitRepositoryImport, GitRepositoryError> {
+        if looks_like_remote_git_source(source) {
+            self.prepare_remote_git_repository_import(source).await
+        } else {
+            self.prepare_local_git_repository_import(source).await
+        }
+    }
+
+    async fn prepare_local_git_repository_import(
+        &self,
+        source: &str,
+    ) -> Result<ResolvedGitRepositoryImport, GitRepositoryError> {
+        validate_local_git_repository_source(source)?;
+
+        let candidate_dir = if source.trim().is_empty() {
+            self.inner.root_dir.as_ref().to_path_buf()
+        } else {
+            self.inner.root_dir.join(source.trim())
+        };
+        let candidate_dir = candidate_dir
+            .canonicalize()
+            .map_err(|_| GitRepositoryError::Invalid("path does not exist".to_string()))?;
+        if !candidate_dir.starts_with(self.inner.root_dir.as_ref()) {
+            return Err(GitRepositoryError::Invalid(
+                "path does not point to a git repository inside EXPLORER_ROOT".to_string(),
+            ));
+        }
+        if !candidate_dir.is_dir() {
+            return Err(GitRepositoryError::Invalid(
+                "path is not a directory".to_string(),
+            ));
+        }
+
+        let repo_root = self
+            .resolve_git_repository_root(&candidate_dir, GitRepositorySourceKind::Local)
+            .await?;
+        let source = to_relative(&repo_root, self.inner.root_dir.as_ref()).ok_or_else(|| {
+            GitRepositoryError::Invalid(
+                "path does not point to a git repository inside EXPLORER_ROOT".to_string(),
+            )
+        })?;
+
+        Ok(ResolvedGitRepositoryImport {
+            source,
+            repo_root,
+            source_kind: GitRepositorySourceKind::Local,
+            _cleanup: None,
+        })
+    }
+
+    async fn prepare_remote_git_repository_import(
+        &self,
+        source: &str,
+    ) -> Result<ResolvedGitRepositoryImport, GitRepositoryError> {
+        let trimmed = source.trim();
+        validate_remote_git_repository_source(trimmed, self.inner.root_dir.as_ref())?;
+
+        let cleanup_root = env::temp_dir().join(format!("sherlock-remote-{}", Uuid::new_v4()));
+        let checkout_dir = cleanup_root.join("checkout");
+        fs::create_dir_all(&cleanup_root).map_err(|error| {
+            GitRepositoryError::Message(format!(
+                "failed to create temporary remote checkout directory: {error}"
+            ))
+        })?;
+
+        let output = Command::new("git")
+            .args(["clone", "--depth", "1", "--single-branch", "--no-tags"])
+            .arg(trimmed)
+            .arg(&checkout_dir)
+            .output()
+            .await
+            .map_err(|error| {
+                GitRepositoryError::Message(format!(
+                    "failed to execute remote git clone for {trimmed}: {error}"
+                ))
+            })?;
+        if !output.status.success() {
+            let _ = fs::remove_dir_all(&cleanup_root);
+            return Err(GitRepositoryError::Invalid(format!(
+                "failed to clone remote git repository: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+
+        let repo_root = self
+            .resolve_git_repository_root(&checkout_dir, GitRepositorySourceKind::Remote)
+            .await?;
+
+        Ok(ResolvedGitRepositoryImport {
+            source: trimmed.to_string(),
+            repo_root,
+            source_kind: GitRepositorySourceKind::Remote,
+            _cleanup: Some(TemporaryGitCheckout { root: cleanup_root }),
+        })
+    }
+
     async fn resolve_git_repository_root(
         &self,
         candidate_dir: &Path,
+        source_kind: GitRepositorySourceKind,
     ) -> Result<PathBuf, GitRepositoryError> {
+        let not_found_message = match source_kind {
+            GitRepositorySourceKind::Local => {
+                "path does not point to a git repository inside EXPLORER_ROOT"
+            }
+            GitRepositorySourceKind::Remote => "source does not point to a git repository",
+        };
+
         let repo_root = match self
             .git_stdout(candidate_dir, &["rev-parse", "--show-toplevel"])
             .await
@@ -1339,19 +1445,11 @@ impl IndexingService {
             Err(GitRepositoryError::Message(message))
                 if message.starts_with("git [\"rev-parse\", \"--show-toplevel\"] failed:") =>
             {
-                return Err(GitRepositoryError::Invalid(
-                    "path does not point to a git repository inside EXPLORER_ROOT".to_string(),
-                ));
+                return Err(GitRepositoryError::Invalid(not_found_message.to_string()));
             }
             Err(error) => return Err(error),
         };
-        let repo_root = PathBuf::from(repo_root.trim());
-        if !repo_root.starts_with(self.inner.root_dir.as_ref()) {
-            return Err(GitRepositoryError::Invalid(
-                "path does not point to a git repository inside EXPLORER_ROOT".to_string(),
-            ));
-        }
-        Ok(repo_root)
+        Ok(PathBuf::from(repo_root.trim()))
     }
 
     async fn persist_git_repository(
@@ -1550,11 +1648,13 @@ impl IndexingService {
     ) -> Result<GitRepositoryView, GitRepositoryError> {
         let repository_id: Uuid = row.get("id");
         let imported_at: DateTime<Utc> = row.get("imported_at");
+        let path: String = row.get("path");
         let languages = self.load_git_repository_languages(repository_id).await?;
 
         Ok(GitRepositoryView {
             id: repository_id.to_string(),
-            path: row.get("path"),
+            path: path.clone(),
+            source_kind: git_repository_source_kind(&path).to_string(),
             name: row.get("name"),
             head_commit: row.get("head_commit"),
             branch: row.get("branch"),
@@ -1683,6 +1783,25 @@ struct StoredRepositoryFile {
 }
 
 #[derive(Debug)]
+struct ResolvedGitRepositoryImport {
+    source: String,
+    repo_root: PathBuf,
+    source_kind: GitRepositorySourceKind,
+    _cleanup: Option<TemporaryGitCheckout>,
+}
+
+#[derive(Debug)]
+struct TemporaryGitCheckout {
+    root: PathBuf,
+}
+
+impl Drop for TemporaryGitCheckout {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+#[derive(Debug)]
 struct PersistGitRepositoryRequest {
     path: String,
     name: String,
@@ -1789,6 +1908,138 @@ fn normalized_path_prefix(path_filter: Option<&str>) -> Option<String> {
 fn sha256_hex(input: &[u8]) -> String {
     let digest = Sha256::digest(input);
     format!("{digest:x}")
+}
+
+fn git_repository_source_kind(source: &str) -> &'static str {
+    if looks_like_remote_git_source(source) {
+        "remote"
+    } else {
+        "local"
+    }
+}
+
+fn repository_name_from_git_source(
+    source: &str,
+    source_kind: GitRepositorySourceKind,
+    repo_root: &Path,
+) -> String {
+    if matches!(source_kind, GitRepositorySourceKind::Local) {
+        return repo_root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or("root")
+            .to_string();
+    }
+
+    let candidate = if let Some(file_path) = file_remote_source_path(source) {
+        file_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(source)
+            .to_string()
+    } else {
+        source
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or(source)
+            .to_string()
+    };
+
+    candidate
+        .trim_end_matches(".git")
+        .trim()
+        .trim_end_matches('/')
+        .to_string()
+}
+
+fn looks_like_remote_git_source(source: &str) -> bool {
+    let trimmed = source.trim();
+    REMOTE_GIT_URL_PREFIXES
+        .iter()
+        .any(|prefix| trimmed.starts_with(prefix))
+        || is_scp_style_git_remote(trimmed)
+}
+
+fn is_scp_style_git_remote(source: &str) -> bool {
+    !source.contains("://")
+        && source.contains('@')
+        && source.contains(':')
+        && !source.starts_with("./")
+        && !source.starts_with("../")
+        && !source.starts_with('/')
+}
+
+fn validate_local_git_repository_source(source: &str) -> Result<(), GitRepositoryError> {
+    let trimmed = source.trim();
+    if trimmed.is_empty() {
+        return Ok(());
+    }
+
+    let path = Path::new(trimmed);
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(GitRepositoryError::Invalid(
+            "path must be relative and cannot contain parent traversal".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_remote_git_repository_source(
+    source: &str,
+    root_dir: &Path,
+) -> Result<(), GitRepositoryError> {
+    if source.is_empty() {
+        return Err(GitRepositoryError::Invalid(
+            "source cannot be empty".to_string(),
+        ));
+    }
+
+    if source.starts_with("file://") {
+        let Some(file_path) = file_remote_source_path(source) else {
+            return Err(GitRepositoryError::Invalid(
+                "file:// remote repositories must use an absolute local path".to_string(),
+            ));
+        };
+        let canonical = file_path.canonicalize().map_err(|_| {
+            GitRepositoryError::Invalid("file:// remote repository path does not exist".to_string())
+        })?;
+        if !canonical.starts_with(root_dir) {
+            return Err(GitRepositoryError::Invalid(
+                "file:// remote repositories must resolve within EXPLORER_ROOT".to_string(),
+            ));
+        }
+        return Ok(());
+    }
+
+    if REMOTE_GIT_URL_PREFIXES
+        .iter()
+        .any(|prefix| source.starts_with(prefix))
+        || is_scp_style_git_remote(source)
+    {
+        return Ok(());
+    }
+
+    Err(GitRepositoryError::Invalid(
+        "remote repository URL must use http, https, ssh, git, file, or scp-style syntax"
+            .to_string(),
+    ))
+}
+
+fn file_remote_source_path(source: &str) -> Option<PathBuf> {
+    let rest = source.strip_prefix("file://")?;
+    let path = rest.strip_prefix("localhost").unwrap_or(rest);
+    if path.starts_with('/') {
+        Some(PathBuf::from(path))
+    } else {
+        None
+    }
 }
 
 fn language_for_repository_path(path: &str) -> String {

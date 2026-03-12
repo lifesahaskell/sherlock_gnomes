@@ -45,7 +45,7 @@ Indexed search and indexing endpoints (require `DATABASE_URL`):
 
 Stored git repository endpoints (require `DATABASE_URL`):
 
-- `POST /api/git/repositories/import` with body `{ "path": "<relative_repo_path>" }`
+- `POST /api/git/repositories/import` with body `{ "source": "<relative_repo_path_or_remote_url>" }`
 - `GET /api/git/repositories`
 - `GET /api/git/repositories/{id}/tree?path=<relative_dir>`
 - `GET /api/git/repositories/{id}/file?path=<relative_file>`
@@ -70,7 +70,8 @@ Feature toggle:
 - `HYBRID_SEARCH_ENABLED=false` disables `GET /api/search/hybrid`, which then returns `404` with `"hybrid search is disabled"`.
 
 Path traversal is blocked (`..` and absolute paths are rejected), and all reads are restricted to `EXPLORER_ROOT`.
-Git repository imports are also restricted to repositories that resolve within `EXPLORER_ROOT`.
+Local git repository imports are restricted to repositories that resolve within `EXPLORER_ROOT`.
+`file://` remote imports are also restricted to `EXPLORER_ROOT`; `http(s)`, `ssh`, `git`, and scp-style remotes are treated as external sources.
 
 `GET /api/search` and `GET /api/search/hybrid` return `409` until at least one successful index exists.
 
@@ -160,7 +161,7 @@ curl http://127.0.0.1:8787/api/index/status \
   -H 'x-api-key: your_read_api_key'
 ```
 
-### 5) Import a git repository snapshot into Postgres
+### 5) Import a local or remote git repository snapshot into Postgres
 
 Use the Explorer UI "Repository Archive" section or call the API:
 
@@ -168,7 +169,16 @@ Use the Explorer UI "Repository Archive" section or call the API:
 curl -X POST http://127.0.0.1:8787/api/git/repositories/import \
   -H 'x-api-key: your_admin_api_key' \
   -H 'content-type: application/json' \
-  -d '{"path":"."}'
+  -d '{"source":"."}'
+```
+
+Remote example:
+
+```bash
+curl -X POST http://127.0.0.1:8787/api/git/repositories/import \
+  -H 'x-api-key: your_admin_api_key' \
+  -H 'content-type: application/json' \
+  -d '{"source":"https://github.com/example/project.git"}'
 ```
 
 List stored repositories:
@@ -178,7 +188,7 @@ curl http://127.0.0.1:8787/api/git/repositories \
   -H 'x-api-key: your_read_api_key'
 ```
 
-Each stored repository record includes branch/head metadata, dirty-state detection, tracked-vs-stored file counts, and a language breakdown for the imported text files.
+Each stored repository record includes whether the source was local or remote, branch/head metadata, dirty-state detection, tracked-vs-stored file counts, and a language breakdown for the imported text files.
 
 ## Deployment (Docker Compose)
 

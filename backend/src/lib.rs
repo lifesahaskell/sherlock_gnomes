@@ -169,7 +169,8 @@ struct UpdateProfileRequest {
 
 #[derive(Deserialize)]
 struct ImportGitRepositoryRequest {
-    path: String,
+    #[serde(alias = "path")]
+    source: String,
 }
 
 #[derive(Serialize)]
@@ -743,10 +744,10 @@ async fn import_git_repository(
     State(state): State<AppState>,
     Json(request): Json<ImportGitRepositoryRequest>,
 ) -> Result<(StatusCode, Json<GitRepositoryView>), AppError> {
-    let candidate_dir = resolve_repository_import_candidate(&state.root_dir, &request.path)?;
+    let source = normalize_repository_import_source(&request.source)?;
     let service = repository_service(&state)?;
     let repository = service
-        .import_git_repository(&candidate_dir)
+        .import_git_repository(&source)
         .await
         .map_err(app_error_from_git_repository)?;
 
@@ -904,21 +905,19 @@ fn app_error_from_git_repository(error: GitRepositoryError) -> AppError {
     }
 }
 
-fn resolve_repository_import_candidate(
-    root: &StdPath,
-    requested_path: &str,
-) -> Result<PathBuf, AppError> {
-    let trimmed = requested_path.trim();
+fn normalize_repository_import_source(source: &str) -> Result<String, AppError> {
+    if source.chars().count() > API_PATH_MAX_CHARACTERS {
+        return Err(AppError::bad_request(format!(
+            "source must be {API_PATH_MAX_CHARACTERS} characters or fewer"
+        )));
+    }
+
+    let trimmed = source.trim();
     if trimmed.is_empty() {
-        return Ok(root.to_path_buf());
+        Ok(".".to_string())
+    } else {
+        Ok(trimmed.to_string())
     }
-
-    let resolved = resolve_within_root(root, Some(trimmed))?;
-    if !resolved.is_dir() {
-        return Err(AppError::bad_request("path is not a directory"));
-    }
-
-    Ok(resolved)
 }
 
 fn validate_create_profile_request(

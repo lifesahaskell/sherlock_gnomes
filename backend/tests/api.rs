@@ -179,6 +179,21 @@ fn create_committed_git_repository(repo_dir: &Path) {
     run_git(repo_dir, &["commit", "-m", "Initial import fixture"]);
 }
 
+fn create_bare_remote_from_worktree(worktree_dir: &Path, bare_repo_dir: &Path) {
+    let output = Command::new("git")
+        .args(["clone", "--bare"])
+        .arg(worktree_dir)
+        .arg(bare_repo_dir)
+        .output()
+        .expect("clone bare repository");
+    assert!(
+        output.status.success(),
+        "git clone --bare failed: stdout={}, stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 async fn wait_for_indexing_completion(app: &Router, failure_context: &str, timeout_message: &str) {
     for _ in 0..30 {
         let status_response = app
@@ -1240,6 +1255,7 @@ async fn git_repository_import_persists_tracked_text_files_and_exposes_stored_tr
     assert_eq!(imported.status(), StatusCode::CREATED);
     let imported_payload = body_json(imported.into_body()).await;
     assert_eq!(imported_payload["path"], "sample-repo");
+    assert_eq!(imported_payload["source_kind"], "local");
     assert_eq!(imported_payload["name"], "sample-repo");
     assert_eq!(imported_payload["branch"], "main");
     assert_eq!(imported_payload["tracked_file_count"], 3);
@@ -1359,6 +1375,111 @@ async fn git_repository_import_persists_tracked_text_files_and_exposes_stored_tr
 
 #[tokio::test]
 #[serial]
+async fn git_repository_import_supports_remote_file_urls() {
+    let Some(test_database_url) = std::env::var("TEST_DATABASE_URL").ok() else {
+        return;
+    };
+
+    let temp = tempdir().expect("create temp dir");
+    let local_repo_dir = temp.path().join("sample-repo");
+    fs::create_dir_all(&local_repo_dir).expect("create local repo dir");
+    create_committed_git_repository(&local_repo_dir);
+    let bare_remote_dir = temp.path().join("remotes").join("sample-remote.git");
+    fs::create_dir_all(
+        bare_remote_dir
+            .parent()
+            .expect("bare remote parent directory should exist"),
+    )
+    .expect("create remote parent dir");
+    create_bare_remote_from_worktree(&local_repo_dir, &bare_remote_dir);
+    let bare_remote_url = format!(
+        "file://{}",
+        bare_remote_dir
+            .canonicalize()
+            .expect("canonicalize bare remote")
+            .display()
+    );
+    let root = temp.path().canonicalize().expect("canonicalize root");
+
+    configure_mock_indexing_env(&test_database_url);
+
+    let indexing = load_indexing_from_env(Arc::new(root.clone()))
+        .await
+        .expect("load indexing from env")
+        .expect("indexing service should be configured");
+
+    let pool = PgPool::connect(&test_database_url)
+        .await
+        .expect("connect test database");
+    sqlx::query(
+        "
+        TRUNCATE TABLE
+            semantic_blocks,
+            indexed_files,
+            index_jobs,
+            user_profiles,
+            git_repository_language_stats,
+            git_repository_files,
+            git_repositories
+        RESTART IDENTITY
+        ",
+    )
+    .execute(&pool)
+    .await
+    .expect("truncate repo snapshot tables");
+
+    let app = build_app_with_indexing(root, Some(indexing));
+
+    let imported = app
+        .clone()
+        .oneshot(post_request(
+            "/api/git/repositories/import",
+            json!({ "source": bare_remote_url }),
+        ))
+        .await
+        .expect("send remote git repository import request");
+    assert_eq!(imported.status(), StatusCode::CREATED);
+    let imported_payload = body_json(imported.into_body()).await;
+    assert_eq!(imported_payload["source_kind"], "remote");
+    assert_eq!(
+        imported_payload["path"],
+        format!(
+            "file://{}",
+            bare_remote_dir
+                .canonicalize()
+                .expect("canonicalize bare remote again")
+                .display()
+        )
+    );
+    assert_eq!(imported_payload["name"], "sample-remote");
+    assert_eq!(imported_payload["branch"], "main");
+    assert_eq!(imported_payload["tracked_file_count"], 3);
+    assert_eq!(imported_payload["stored_file_count"], 2);
+    assert_eq!(imported_payload["skipped_binary_files"], 1);
+    assert_eq!(imported_payload["is_dirty"], false);
+    assert!(
+        imported_payload["analysis_summary"]
+            .as_str()
+            .expect("analysis summary")
+            .contains("Stored 2 text files")
+    );
+
+    let repositories = app
+        .oneshot(get_request("/api/git/repositories"))
+        .await
+        .expect("send repository list request");
+    assert_eq!(repositories.status(), StatusCode::OK);
+    let repositories_payload = body_json(repositories.into_body()).await;
+    let repositories_array = repositories_payload
+        .as_array()
+        .expect("repository list array");
+    assert_eq!(repositories_array.len(), 1);
+    assert_eq!(repositories_array[0]["source_kind"], "remote");
+    assert_eq!(repositories_array[0]["is_dirty"], false);
+}
+
+#[tokio::test]
+#[serial]
 async fn git_repository_import_rejects_unsafe_and_non_repository_paths() {
     let Some(test_database_url) = std::env::var("TEST_DATABASE_URL").ok() else {
         return;
@@ -1388,6 +1509,7 @@ async fn git_repository_import_rejects_unsafe_and_non_repository_paths() {
     assert_eq!(traversal.status(), StatusCode::BAD_REQUEST);
 
     let missing_git = app
+        .clone()
         .oneshot(post_request(
             "/api/git/repositories/import",
             json!({ "path": "plain-dir" }),
@@ -1399,6 +1521,36 @@ async fn git_repository_import_rejects_unsafe_and_non_repository_paths() {
     assert_eq!(
         missing_git_payload["error"],
         "path does not point to a git repository inside EXPLORER_ROOT"
+    );
+
+    let outside = tempdir().expect("create outside temp dir");
+    let outside_repo_dir = outside.path().join("outside-remote.git");
+    let outside_worktree_dir = outside.path().join("outside-worktree");
+    fs::create_dir_all(&outside_worktree_dir).expect("create outside worktree dir");
+    create_committed_git_repository(&outside_worktree_dir);
+    create_bare_remote_from_worktree(&outside_worktree_dir, &outside_repo_dir);
+
+    let outside_remote = app
+        .clone()
+        .oneshot(post_request(
+            "/api/git/repositories/import",
+            json!({
+                "source": format!(
+                    "file://{}",
+                    outside_repo_dir
+                        .canonicalize()
+                        .expect("canonicalize outside remote")
+                        .display()
+                )
+            }),
+        ))
+        .await
+        .expect("send outside file remote import request");
+    assert_eq!(outside_remote.status(), StatusCode::BAD_REQUEST);
+    let outside_remote_payload = body_json(outside_remote.into_body()).await;
+    assert_eq!(
+        outside_remote_payload["error"],
+        "file:// remote repositories must resolve within EXPLORER_ROOT"
     );
 }
 
