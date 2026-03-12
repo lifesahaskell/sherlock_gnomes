@@ -90,21 +90,6 @@ export type HealthResponse = {
   hybrid_search_enabled?: boolean;
 };
 
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:8787";
-
-function hasHeaders(headers: Headers): boolean {
-  return headers.keys().next().done === false;
-}
-
-function readApiKeyForRequest(path: string): string | null {
-  if (!path.startsWith("/api/")) {
-    return null;
-  }
-  const key = process.env.NEXT_PUBLIC_EXPLORER_READ_API_KEY?.trim();
-  return key && key.length > 0 ? key : null;
-}
-
 function buildRequestHeaders(path: string, init: RequestInit | undefined): Headers | undefined {
   const method = init?.method?.toUpperCase() ?? "GET";
   const hasRequestBody = init?.body !== undefined;
@@ -116,12 +101,7 @@ function buildRequestHeaders(path: string, init: RequestInit | undefined): Heade
     headers.set("Content-Type", "application/json");
   }
 
-  const readApiKey = readApiKeyForRequest(path);
-  if (readApiKey) {
-    headers.set("X-API-Key", readApiKey);
-  }
-
-  return hasHeaders(headers) ? headers : undefined;
+  return headers.keys().next().done === false ? headers : undefined;
 }
 
 function buildSearchQueryString(query: string, path: string, limit: number): string {
@@ -137,7 +117,7 @@ function buildSearchQueryString(query: string, path: string, limit: number): str
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = buildRequestHeaders(path, init);
-  const response = await fetch(`${API_BASE}${path}`, {
+  const response = await fetch(path, {
     ...init,
     ...(headers ? { headers } : {})
   });

@@ -6,8 +6,11 @@ FRONTEND_BASE_URL="${FRONTEND_BASE_URL:-http://127.0.0.1:3000}"
 WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-180}"
 INDEX_TIMEOUT_SECONDS="${INDEX_TIMEOUT_SECONDS:-420}"
 POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-3}"
-INTEGRATION_READ_API_KEY="${INTEGRATION_READ_API_KEY:-${EXPLORER_READ_API_KEY:-dev-read-key}}"
-INTEGRATION_ADMIN_API_KEY="${INTEGRATION_ADMIN_API_KEY:-${EXPLORER_ADMIN_API_KEY:-dev-admin-key}}"
+INTEGRATION_READ_API_KEY="${INTEGRATION_READ_API_KEY:-${EXPLORER_READ_API_KEY:-}}"
+INTEGRATION_ADMIN_API_KEY="${INTEGRATION_ADMIN_API_KEY:-${EXPLORER_ADMIN_API_KEY:-}}"
+INTEGRATION_LOGIN_USERNAME="${INTEGRATION_LOGIN_USERNAME:-${LOGIN_USERNAME:-}}"
+INTEGRATION_LOGIN_PASSWORD="${INTEGRATION_LOGIN_PASSWORD:-}"
+FRONTEND_COOKIE_JAR="${FRONTEND_COOKIE_JAR:-/tmp/sherlock-frontend-cookie-jar.txt}"
 
 log_step() {
   printf '\n[integration] %s\n' "$*"
@@ -39,6 +42,10 @@ frontend_url() {
   printf '%s%s' "$FRONTEND_BASE_URL" "$1"
 }
 
+frontend_get() {
+  curl -fsS --connect-timeout 2 --max-time 20 -c "$FRONTEND_COOKIE_JAR" -b "$FRONTEND_COOKIE_JAR" "$1"
+}
+
 wait_for_http_ok() {
   local url="$1"
   local label="$2"
@@ -51,6 +58,30 @@ wait_for_http_ok() {
     fi
     sleep 2
   done
+}
+
+login_frontend_session() {
+  if [[ -z "$INTEGRATION_LOGIN_USERNAME" || -z "$INTEGRATION_LOGIN_PASSWORD" ]]; then
+    fail "frontend login credentials are required for integration checks"
+  fi
+
+  : > "$FRONTEND_COOKIE_JAR"
+
+  local payload
+  payload="$(INTEGRATION_LOGIN_USERNAME="$INTEGRATION_LOGIN_USERNAME" INTEGRATION_LOGIN_PASSWORD="$INTEGRATION_LOGIN_PASSWORD" python3 - <<'PY'
+import json
+import os
+
+print(json.dumps({
+    "username": os.environ["INTEGRATION_LOGIN_USERNAME"],
+    "password": os.environ["INTEGRATION_LOGIN_PASSWORD"],
+}))
+PY
+)"
+
+  local response
+  response="$(curl -fsS --connect-timeout 2 --max-time 20 -c "$FRONTEND_COOKIE_JAR" -b "$FRONTEND_COOKIE_JAR" -X POST "$(frontend_url '/api/auth/login')" -H 'content-type: application/json' --data "$payload")"
+  assert_json_expr "$response" 'data.get("success") is True' "frontend login should succeed"
 }
 
 curl_with_api_key() {

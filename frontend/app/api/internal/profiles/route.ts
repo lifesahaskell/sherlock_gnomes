@@ -1,45 +1,17 @@
 import { NextResponse } from "next/server";
+import {
+  backendApiKey,
+  backendBaseUrl,
+  ensureAuthenticatedRequest,
+  jsonError,
+  relayJsonResponse,
+} from "@/lib/backend-proxy";
 
 type CreateProfilePayload = {
   display_name: string;
   email: string;
   bio?: string;
 };
-
-const DEFAULT_BACKEND_BASE = "http://127.0.0.1:8787";
-
-function backendBaseUrl(): string {
-  return (
-    process.env.EXPLORER_BACKEND_API_BASE?.trim() ||
-    process.env.NEXT_PUBLIC_API_BASE?.trim() ||
-    DEFAULT_BACKEND_BASE
-  );
-}
-
-function adminApiKey(): string | null {
-  const key = process.env.EXPLORER_ADMIN_API_KEY?.trim();
-  return key && key.length > 0 ? key : null;
-}
-
-function jsonError(status: number, error: string): NextResponse {
-  return NextResponse.json({ error }, { status });
-}
-
-async function relayJsonResponse(response: Response): Promise<NextResponse> {
-  const payload = await response.text();
-  if (!payload) {
-    return new NextResponse(null, { status: response.status });
-  }
-
-  try {
-    return NextResponse.json(JSON.parse(payload), { status: response.status });
-  } catch {
-    return NextResponse.json(
-      { error: payload || `Request failed (${response.status})` },
-      { status: response.status }
-    );
-  }
-}
 
 function sanitizeCreatePayload(input: Partial<CreateProfilePayload>): CreateProfilePayload | null {
   const display_name = typeof input.display_name === "string" ? input.display_name.trim() : "";
@@ -54,7 +26,12 @@ function sanitizeCreatePayload(input: Partial<CreateProfilePayload>): CreateProf
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
-  const key = adminApiKey();
+  const accessError = await ensureAuthenticatedRequest(request, { requireCsrf: true });
+  if (accessError) {
+    return accessError;
+  }
+
+  const key = backendApiKey("admin");
   if (!key) {
     return jsonError(500, "EXPLORER_ADMIN_API_KEY is not configured for profile writes.");
   }

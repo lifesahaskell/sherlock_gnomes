@@ -20,8 +20,8 @@ services:
       PORT: 8787
       EXPLORER_ROOT: /workspace
       EXPLORER_AUTH_DISABLED: ${EXPLORER_AUTH_DISABLED:-false}
-      EXPLORER_READ_API_KEY: ${EXPLORER_READ_API_KEY:-dev-read-key}
-      EXPLORER_ADMIN_API_KEY: ${EXPLORER_ADMIN_API_KEY:-dev-admin-key}
+      EXPLORER_READ_API_KEY: ${EXPLORER_READ_API_KEY:?EXPLORER_READ_API_KEY is required}
+      EXPLORER_ADMIN_API_KEY: ${EXPLORER_ADMIN_API_KEY:?EXPLORER_ADMIN_API_KEY is required}
       EXPLORER_ALLOWED_ORIGINS: ${EXPLORER_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
       DATABASE_URL: postgres://sherlock:sherlock@postgres:5432/sherlock
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-openai}
@@ -39,14 +39,15 @@ services:
     build:
       context: .
       dockerfile: frontend/Dockerfile
-      args:
-        NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-http://localhost:8787}
-        NEXT_PUBLIC_EXPLORER_READ_API_KEY: ${NEXT_PUBLIC_EXPLORER_READ_API_KEY:-dev-read-key}
     environment:
       PORT: 3000
       HOSTNAME: 0.0.0.0
-      NEXT_PUBLIC_EXPLORER_READ_API_KEY: ${NEXT_PUBLIC_EXPLORER_READ_API_KEY:-dev-read-key}
-      EXPLORER_ADMIN_API_KEY: ${EXPLORER_ADMIN_API_KEY:-dev-admin-key}
+      LOGIN_AUTH_DISABLED: ${LOGIN_AUTH_DISABLED:-false}
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
+      LOGIN_USERNAME: ${LOGIN_USERNAME:?LOGIN_USERNAME is required}
+      LOGIN_PASSWORD_HASH: ${LOGIN_PASSWORD_HASH:?LOGIN_PASSWORD_HASH is required}
+      EXPLORER_READ_API_KEY: ${EXPLORER_READ_API_KEY:?EXPLORER_READ_API_KEY is required}
+      EXPLORER_ADMIN_API_KEY: ${EXPLORER_ADMIN_API_KEY:?EXPLORER_ADMIN_API_KEY is required}
       EXPLORER_BACKEND_API_BASE: ${EXPLORER_BACKEND_API_BASE:-http://backend:8787}
     depends_on:
       - backend

@@ -185,7 +185,7 @@ async fn health_returns_ok_and_root() {
     assert_eq!(response.status(), StatusCode::OK);
     let payload = body_json(response.into_body()).await;
     assert_eq!(payload["status"], "ok");
-    assert_eq!(payload["root_dir"], root.to_string_lossy().to_string());
+    assert!(payload.get("root_dir").is_none());
     assert_eq!(payload["indexed_search_enabled"], false);
     assert_eq!(payload["hybrid_search_enabled"], true);
 }
@@ -1044,6 +1044,75 @@ async fn indexing_skips_sensitive_files_by_default_and_allows_override() {
             .expect("query .pem index presence after override");
     assert!(env_indexed_after_override);
     assert!(pem_indexed_after_override);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[serial]
+async fn indexing_skips_symlinked_files_that_escape_root() {
+    use std::os::unix::fs::symlink;
+
+    let Some(test_database_url) = std::env::var("TEST_DATABASE_URL").ok() else {
+        return;
+    };
+
+    let temp = tempdir().expect("create temp dir");
+    let outside = tempdir().expect("create outside dir");
+    fs::write(temp.path().join("visible.rs"), "fn visible() {}").expect("write visible file");
+    fs::write(outside.path().join("secret.txt"), "outside secret").expect("write outside file");
+    symlink(
+        outside.path().join("secret.txt"),
+        temp.path().join("linked-secret.txt"),
+    )
+    .expect("create symlink");
+
+    let root = temp.path().canonicalize().expect("canonicalize root");
+
+    configure_mock_indexing_env(&test_database_url);
+
+    let indexing = load_indexing_from_env(Arc::new(root.clone()))
+        .await
+        .expect("load indexing from env")
+        .expect("indexing service should be configured");
+
+    let pool = PgPool::connect(&test_database_url)
+        .await
+        .expect("connect test database");
+    sqlx::query("TRUNCATE TABLE semantic_blocks, indexed_files, index_jobs RESTART IDENTITY")
+        .execute(&pool)
+        .await
+        .expect("truncate index tables");
+
+    let app = build_app_with_indexing(root, Some(indexing));
+
+    let start = app
+        .clone()
+        .oneshot(post_request("/api/index", json!({})))
+        .await
+        .expect("send index start request");
+    assert_eq!(start.status(), StatusCode::ACCEPTED);
+
+    wait_for_indexing_completion(
+        &app,
+        "symlink indexing job failed",
+        "symlink indexing did not complete within timeout",
+    )
+    .await;
+
+    let symlink_indexed: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM indexed_files WHERE path = 'linked-secret.txt')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("query symlink index presence");
+    let visible_indexed: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM indexed_files WHERE path = 'visible.rs')")
+            .fetch_one(&pool)
+            .await
+            .expect("query visible file index presence");
+
+    assert!(!symlink_indexed);
+    assert!(visible_indexed);
 }
 
 #[tokio::test]

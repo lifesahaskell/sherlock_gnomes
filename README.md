@@ -116,13 +116,22 @@ Optional env vars:
 ```bash
 cd frontend
 npm install
-NEXT_PUBLIC_API_BASE=http://127.0.0.1:8787 \
-NEXT_PUBLIC_EXPLORER_READ_API_KEY=dev-read-key \
+SESSION_SECRET=replace-with-at-least-32-characters \
+LOGIN_USERNAME=admin \
+LOGIN_PASSWORD_HASH='<bcrypt hash for your password>' \
 EXPLORER_BACKEND_API_BASE=http://127.0.0.1:8787 \
+EXPLORER_READ_API_KEY=dev-read-key \
+EXPLORER_ADMIN_API_KEY=dev-admin-key \
 npm run dev
 ```
 
 Open `http://127.0.0.1:3000`.
+
+Generate a bcrypt password hash from the `frontend/` directory with:
+
+```bash
+node -e "const bcrypt=require('bcryptjs'); console.log(bcrypt.hashSync('change-me', 10));"
+```
 
 ### 4) Trigger indexing
 
@@ -162,13 +171,14 @@ Services:
 - Backend API: `http://localhost:8787`
 - Postgres+pgvector: `localhost:5432`
 
-Optional overrides:
+Required environment:
 
 ```bash
-NEXT_PUBLIC_API_BASE=http://localhost:8787 \
-NEXT_PUBLIC_EXPLORER_READ_API_KEY=your_read_api_key \
 EXPLORER_READ_API_KEY=your_read_api_key \
 EXPLORER_ADMIN_API_KEY=your_admin_api_key \
+SESSION_SECRET=replace-with-at-least-32-characters \
+LOGIN_USERNAME=your_login_username \
+LOGIN_PASSWORD_HASH='<bcrypt hash for your password>' \
 EXPLORER_BACKEND_API_BASE=http://backend:8787 \
 OPENAI_API_KEY=your_key_here \
 EMBEDDING_PROVIDER=openai \
@@ -180,6 +190,7 @@ Notes:
 - Backend container reads files from a read-only bind mount of the repo at `/workspace`.
 - Backend root path is controlled by `EXPLORER_ROOT` (default in compose: `/workspace`).
 - Backend bind address is configurable with `HOST` (default: `127.0.0.1`; compose uses `0.0.0.0`).
+- Browser clients no longer receive backend API keys; frontend reads and writes go through same-origin Next.js proxy routes.
 
 ## Testing
 

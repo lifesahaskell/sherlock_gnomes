@@ -3,6 +3,8 @@ import { getIronSession } from "iron-session";
 import { cookies } from "next/headers";
 import { verifyCredentials } from "@/lib/auth";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { validateOrigin } from "@/lib/csrf";
+import { requestClientId } from "@/lib/request-client-id";
 import { sessionOptions, type SessionData } from "@/lib/session";
 
 type LoginPayload = {
@@ -14,15 +16,11 @@ function jsonError(status: number, error: string, headers?: Record<string, strin
   return NextResponse.json({ error }, { status, headers });
 }
 
-function getClientIp(request: Request): string {
-  const forwarded = request.headers.get("x-forwarded-for");
-  if (forwarded) {
-    return forwarded.split(",")[0].trim();
-  }
-  return "unknown";
-}
-
 export async function POST(request: Request): Promise<NextResponse> {
+  if (!validateOrigin(request)) {
+    return jsonError(403, "CSRF validation failed");
+  }
+
   const body = (await request.json().catch(() => null)) as Partial<LoginPayload> | null;
   if (!body) {
     return jsonError(400, "Request body must be valid JSON.");
@@ -39,7 +37,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 
   // Check rate limit
-  const ip = getClientIp(request);
+  const ip = requestClientId(request);
   const rateResult = checkRateLimit(ip);
   if (!rateResult.allowed) {
     return jsonError(429, "Too many login attempts. Please try again later.", {
@@ -47,7 +45,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     });
   }
 
-  if (!verifyCredentials(username.trim(), password)) {
+  if (!(await verifyCredentials(username.trim(), password))) {
     return jsonError(401, "Invalid username or password.");
   }
 

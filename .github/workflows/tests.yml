@@ -74,11 +74,14 @@ jobs:
     env:
       EMBEDDING_PROVIDER: mock
       EMBEDDING_MODEL: text-embedding-3-small
-      NEXT_PUBLIC_API_BASE: http://localhost:8787
-      NEXT_PUBLIC_EXPLORER_READ_API_KEY: dev-read-key
-      EXPLORER_READ_API_KEY: dev-read-key
-      EXPLORER_ADMIN_API_KEY: dev-admin-key
+      EXPLORER_READ_API_KEY: ci-read-key
+      EXPLORER_ADMIN_API_KEY: ci-admin-key
       EXPLORER_BACKEND_API_BASE: http://backend:8787
+      SESSION_SECRET: integration-session-secret-that-is-long-enough-1234567890
+      LOGIN_USERNAME: sherlock
+      LOGIN_PASSWORD_HASH: $2b$10$ouNA/osN/wp9AntcpW4QG..1EyFzxHL0nalXUE/b7PAo.76FIBh/6
+      INTEGRATION_LOGIN_USERNAME: sherlock
+      INTEGRATION_LOGIN_PASSWORD: SherlockTestPassword!2026
       OPENAI_API_KEY: ""
       BACKEND_BASE_URL: http://127.0.0.1:8787
       FRONTEND_BASE_URL: http://127.0.0.1:3000

@@ -23,14 +23,37 @@ describe("POST /api/auth/logout", () => {
     mockGetIronSession.mockResolvedValue({ destroy: mockDestroy });
   });
 
-  it("destroys the session and returns 200", async () => {
+  it("destroys the session and returns 200 with no-store cache header", async () => {
     const { POST } = await import("./route");
 
-    const response = await POST();
+    const request = new Request("http://localhost/api/auth/logout", {
+      method: "POST",
+    });
+
+    const response = await POST(request);
     const body = (await response.json()) as { success: boolean };
 
     expect(response.status).toBe(200);
     expect(body.success).toBe(true);
     expect(mockDestroy).toHaveBeenCalled();
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+  });
+
+  it("returns 403 when origin does not match host", async () => {
+    const { POST } = await import("./route");
+
+    const request = new Request("http://localhost/api/auth/logout", {
+      method: "POST",
+      headers: {
+        origin: "http://evil.com",
+        host: "localhost",
+      },
+    });
+
+    const response = await POST(request);
+    const body = (await response.json()) as { error: string };
+
+    expect(response.status).toBe(403);
+    expect(body.error).toBe("CSRF validation failed");
   });
 });

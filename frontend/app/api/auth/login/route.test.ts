@@ -23,6 +23,7 @@ describe("POST /api/auth/login", () => {
   beforeEach(() => {
     vi.resetModules();
     const passwordHash = bcrypt.hashSync("secret123", 10);
+    vi.stubEnv("LOGIN_USERNAME", "admin");
     vi.stubEnv("LOGIN_PASSWORD_HASH", passwordHash);
     vi.stubEnv("SESSION_SECRET", "a-secret-that-is-at-least-32-characters-long!");
 
@@ -122,6 +123,26 @@ describe("POST /api/auth/login", () => {
     expect(response.status).toBe(429);
     expect(body.error).toContain("Too many login attempts");
     expect(response.headers.get("Retry-After")).toBe("600");
+    expect(mockCheckRateLimit).toHaveBeenCalledWith("direct");
+  });
+
+  it("uses forwarded IPs only when TRUST_PROXY_HEADERS is enabled", async () => {
+    vi.stubEnv("TRUST_PROXY_HEADERS", "true");
+
+    const { POST } = await import("./route");
+    const request = new Request("http://localhost/api/auth/login", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-forwarded-for": "1.2.3.4, 5.6.7.8",
+      },
+      body: JSON.stringify({ username: "admin", password: "secret123" }),
+    });
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(200);
+    expect(mockCheckRateLimit).toHaveBeenCalledWith("1.2.3.4");
   });
 
   it("accepts plain username and password (no encryption)", async () => {

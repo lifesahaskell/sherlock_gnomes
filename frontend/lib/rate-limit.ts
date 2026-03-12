@@ -1,7 +1,19 @@
 const WINDOW_MS = 15 * 60 * 1000; // 15 minutes
 const MAX_ATTEMPTS = 5;
+const MAX_MAP_ENTRIES = 10_000;
 
 const attempts = new Map<string, number[]>();
+
+function sweepStaleEntries(now: number): void {
+  if (attempts.size <= MAX_MAP_ENTRIES) return;
+
+  const windowStart = now - WINDOW_MS;
+  for (const [key, timestamps] of attempts) {
+    if (timestamps.every((t) => t <= windowStart)) {
+      attempts.delete(key);
+    }
+  }
+}
 
 export function checkRateLimit(ip: string): {
   allowed: boolean;
@@ -9,6 +21,8 @@ export function checkRateLimit(ip: string): {
 } {
   const now = Date.now();
   const windowStart = now - WINDOW_MS;
+
+  sweepStaleEntries(now);
 
   // Get existing attempts and filter to only those within the window
   const existing = attempts.get(ip) ?? [];

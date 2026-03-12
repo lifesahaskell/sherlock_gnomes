@@ -79,6 +79,24 @@ describe("auth middleware", () => {
     expect(response.headers.get("location")).toContain("/login");
   });
 
+  it("redirects when session is expired (older than 24 hours)", async () => {
+    const expiredTimestamp = Date.now() - 25 * 60 * 60 * 1000; // 25 hours ago
+    const mockDestroy = vi.fn();
+    mockGetIronSession.mockResolvedValue({
+      username: "admin",
+      loggedInAt: expiredTimestamp,
+      destroy: mockDestroy,
+    });
+
+    const { middleware } = await import("./middleware");
+    const request = new NextRequest(new URL("http://localhost/explorer"));
+
+    const response = await middleware(request);
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toContain("/login");
+    expect(mockDestroy).toHaveBeenCalled();
+  });
+
   it("skips auth entirely when LOGIN_AUTH_DISABLED is true", async () => {
     vi.stubEnv("LOGIN_AUTH_DISABLED", "true");
     vi.resetModules();

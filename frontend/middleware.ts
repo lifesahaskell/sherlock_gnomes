@@ -33,6 +33,12 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
     return NextResponse.redirect(new URL("/login", request.url));
   }
 
+  // Enforce server-side session expiry (24 hours)
+  if (session.loggedInAt && Date.now() - session.loggedInAt > 24 * 60 * 60 * 1000) {
+    session.destroy();
+    return NextResponse.redirect(new URL("/login", request.url));
+  }
+
   return NextResponse.next();
 }
 

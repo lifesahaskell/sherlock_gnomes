@@ -46,8 +46,11 @@ OPENAI_API_KEY=<key> cargo run
 **Frontend:**
 ```bash
 cd frontend && npm install
-NEXT_PUBLIC_API_BASE=http://127.0.0.1:8787 \
-NEXT_PUBLIC_EXPLORER_READ_API_KEY=dev-read-key \
+SESSION_SECRET=replace-with-at-least-32-characters \
+LOGIN_USERNAME=admin \
+LOGIN_PASSWORD_HASH='<bcrypt hash for your password>' \
+EXPLORER_READ_API_KEY=dev-read-key \
+EXPLORER_ADMIN_API_KEY=dev-admin-key \
 EXPLORER_BACKEND_API_BASE=http://127.0.0.1:8787 npm run dev
 ```
 
@@ -69,12 +72,15 @@ Or run the full stack: `docker compose up --build -d`
 ### Frontend (`frontend/`)
 - **`app/`** — Next.js App Router pages: `/` homepage, `/explorer` tree+file viewer, `/docs` API docs, `/profile` user profiles
 - **`components/`** — `top-nav.tsx` (shared nav), `explorer.tsx` (tree/file/search/ask UI)
-- **`lib/api.ts`** — all client-side calls to the backend; attaches `X-API-Key` from `NEXT_PUBLIC_EXPLORER_READ_API_KEY` automatically
+- **`lib/api.ts`** — all client-side calls stay same-origin and talk to the Next.js proxy layer rather than the backend directly
+- **`lib/backend-proxy.ts`** — shared server-side proxy/auth helpers for forwarding authenticated frontend requests to the backend with server-only API keys
 - **`lib/profile-admin.ts`** — profile write helpers that call the internal Next.js proxy (not the backend directly)
-- **`app/api/internal/profiles/`** — server-side Next.js route that attaches `EXPLORER_ADMIN_API_KEY` before proxying profile writes to the backend; prevents the admin key from being exposed to the browser
+- **`app/api/`** — same-origin Next.js proxy routes for backend reads/admin actions; keeps both read and admin keys out of the browser
+- **`app/api/internal/profiles/`** — server-side Next.js route that sanitizes profile writes before forwarding them with the admin key
 
 ### Key design decisions
-- Frontend profile writes go through `/api/internal/profiles*` (Next.js server route) → backend, so the admin key stays server-side only
+- Frontend backend access goes through same-origin Next.js proxy routes, so browser sessions never receive backend API keys
+- Frontend profile writes go through `/api/internal/profiles*` (Next.js server route) → backend, so payload validation and admin-key attachment stay server-side
 - `EMBEDDING_PROVIDER=mock` skips OpenAI for local testing/CI
 - `EXPLORER_AUTH_DISABLED=true` bypasses auth (dev only)
 - `HYBRID_SEARCH_ENABLED=false` disables `/api/search/hybrid`

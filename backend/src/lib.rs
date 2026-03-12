@@ -19,6 +19,7 @@ use axum::{
     routing::{get, post, put},
 };
 use serde::{Deserialize, Serialize};
+use subtle::ConstantTimeEq;
 use tokio::sync::Mutex;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
@@ -38,6 +39,7 @@ struct AppState {
     hybrid_search_enabled: bool,
     security: ApiSecurityConfig,
     rate_limiter: Arc<RateLimiter>,
+    trust_proxy_headers: bool,
 }
 
 #[derive(Clone)]
@@ -62,7 +64,6 @@ enum ApiScope {
 #[derive(Serialize)]
 struct HealthResponse {
     status: &'static str,
-    root_dir: String,
     indexed_search_enabled: bool,
     hybrid_search_enabled: bool,
 }
@@ -324,12 +325,17 @@ pub fn build_app_with_indexing_and_hybrid_toggle_and_security(
     security: ApiSecurityConfig,
 ) -> Router {
     let root_dir = root_dir.canonicalize().unwrap_or(root_dir);
+    let trust_proxy_headers = env::var("TRUST_PROXY_HEADERS")
+        .ok()
+        .and_then(|value| parse_env_bool(&value))
+        .unwrap_or(false);
     let state = AppState {
         root_dir: Arc::new(root_dir),
         indexing: indexing.map(Arc::new),
         hybrid_search_enabled,
         security: security.clone(),
         rate_limiter: Arc::new(RateLimiter::new()),
+        trust_proxy_headers,
     };
     let api_key_header = HeaderName::from_static("x-api-key");
     let cors = CorsLayer::new()
@@ -374,7 +380,7 @@ async fn enforce_auth_and_rate_limit(
             return error.into_response();
         }
 
-        let identifier = request_client_id(&request);
+        let identifier = request_client_id(&request, state.trust_proxy_headers);
         let (limit, window) = match scope {
             ApiScope::Read => (READ_RATELIMIT_PER_MINUTE, RATE_LIMIT_WINDOW),
             ApiScope::Admin => (ADMIN_RATELIMIT_PER_MINUTE, RATE_LIMIT_WINDOW),
@@ -402,6 +408,12 @@ impl RateLimiter {
     async fn check(&self, key: String, limit: usize, window: Duration) -> bool {
         let now = Instant::now();
         let mut buckets = self.buckets.lock().await;
+
+        // Evict stale entries when the map grows too large to prevent memory exhaustion
+        if buckets.len() > 10_000 {
+            buckets.retain(|_, bucket| bucket.iter().any(|&ts| now.duration_since(ts) <= window));
+        }
+
         let bucket = buckets.entry(key).or_default();
 
         while let Some(oldest) = bucket.front().copied() {
@@ -509,41 +521,44 @@ fn provided_auth_credential(headers: &HeaderMap) -> Option<&str> {
 }
 
 fn configured_key_matches(configured: &Option<String>, provided: &str) -> bool {
-    configured
-        .as_deref()
-        .is_some_and(|configured| configured == provided)
+    configured.as_deref().is_some_and(|c| {
+        c.len() == provided.len() && c.as_bytes().ct_eq(provided.as_bytes()).into()
+    })
 }
 
-fn request_client_id(request: &Request<Body>) -> String {
-    if let Some(forwarded) = request
-        .headers()
-        .get("x-forwarded-for")
-        .and_then(|value| value.to_str().ok())
-    {
-        let first = forwarded.split(',').next().unwrap_or_default().trim();
-        if !first.is_empty() {
-            return first.to_string();
+fn request_client_id(request: &Request<Body>, trust_proxy_headers: bool) -> String {
+    if trust_proxy_headers {
+        if let Some(forwarded) = request
+            .headers()
+            .get("x-forwarded-for")
+            .and_then(|value| value.to_str().ok())
+        {
+            let first = forwarded.split(',').next().unwrap_or_default().trim();
+            if !first.is_empty() {
+                return first.to_string();
+            }
+        }
+
+        if let Some(real_ip) = request
+            .headers()
+            .get("x-real-ip")
+            .and_then(|value| value.to_str().ok())
+        {
+            let trimmed = real_ip.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
         }
     }
 
-    if let Some(real_ip) = request
-        .headers()
-        .get("x-real-ip")
-        .and_then(|value| value.to_str().ok())
-    {
-        let trimmed = real_ip.trim();
-        if !trimmed.is_empty() {
-            return trimmed.to_string();
-        }
-    }
-
-    "unknown".to_string()
+    // When proxy headers are not trusted, use a fixed prefix so that
+    // spoofed headers cannot influence rate-limit bucketing.
+    "direct".to_string()
 }
 
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok",
-        root_dir: state.root_dir.display().to_string(),
         indexed_search_enabled: state.indexing.is_some(),
         hybrid_search_enabled: state.hybrid_search_enabled,
     })

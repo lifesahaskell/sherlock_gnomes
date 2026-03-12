@@ -12,9 +12,12 @@ import {
 } from "@/lib/api";
 
 describe("api client", () => {
+  function requestUrl(callIndex = 0): URL {
+    return new URL(String(vi.mocked(global.fetch).mock.calls[callIndex][0]), "http://localhost");
+  }
+
   beforeEach(() => {
     vi.stubGlobal("fetch", vi.fn());
-    vi.stubEnv("NEXT_PUBLIC_EXPLORER_READ_API_KEY", "frontend-read-key");
   });
 
   afterEach(() => {
@@ -33,7 +36,7 @@ describe("api client", () => {
 
     await getTree("src/lib files");
 
-    const calledUrl = new URL(String(mockFetch.mock.calls[0][0]));
+    const calledUrl = requestUrl();
     expect(calledUrl.pathname).toBe("/api/tree");
     expect(calledUrl.searchParams.get("path")).toBe("src/lib files");
   });
@@ -49,7 +52,7 @@ describe("api client", () => {
 
     await getFile("src/main.rs");
 
-    const calledUrl = new URL(String(mockFetch.mock.calls[0][0]));
+    const calledUrl = requestUrl();
     expect(calledUrl.pathname).toBe("/api/file");
     expect(calledUrl.searchParams.get("path")).toBe("src/main.rs");
   });
@@ -75,7 +78,7 @@ describe("api client", () => {
 
     const calledUrlValue = mockFetch.mock.calls[0][0] as string;
     const calledOptions = mockFetch.mock.calls[0][1] as RequestInit | undefined;
-    const calledUrl = new URL(String(calledUrlValue));
+    const calledUrl = new URL(String(calledUrlValue), "http://localhost");
     expect(calledUrl.pathname).toBe("/health");
     const headers = new Headers(calledOptions?.headers as HeadersInit | undefined);
     expect(headers.has("Content-Type")).toBe(false);
@@ -93,7 +96,7 @@ describe("api client", () => {
 
     await searchCode("Alpha symbol", "src", 17);
 
-    const calledUrl = new URL(String(mockFetch.mock.calls[0][0]));
+    const calledUrl = requestUrl();
     expect(calledUrl.pathname).toBe("/api/search");
     expect(calledUrl.searchParams.get("query")).toBe("Alpha symbol");
     expect(calledUrl.searchParams.get("path")).toBe("src");
@@ -111,7 +114,7 @@ describe("api client", () => {
 
     await searchHybrid("Alpha symbol", "src", 7);
 
-    const calledUrl = new URL(String(mockFetch.mock.calls[0][0]));
+    const calledUrl = requestUrl();
     expect(calledUrl.pathname).toBe("/api/search/hybrid");
     expect(calledUrl.searchParams.get("query")).toBe("Alpha symbol");
     expect(calledUrl.searchParams.get("path")).toBe("src");
@@ -131,14 +134,14 @@ describe("api client", () => {
 
     const calledUrlValue = mockFetch.mock.calls[0][0] as string;
     const calledOptions = mockFetch.mock.calls[0][1] as RequestInit;
-    expect(calledUrlValue).toBe("http://127.0.0.1:8787/api/ask");
+    expect(calledUrlValue).toBe("/api/ask");
     expect(calledOptions.method).toBe("POST");
     expect(calledOptions.body).toBe(
       JSON.stringify({ question: "What changed?", paths: ["src/main.rs"] })
     );
     const headers = new Headers(calledOptions.headers as HeadersInit | undefined);
     expect(headers.get("Content-Type")).toBe("application/json");
-    expect(headers.get("X-API-Key")).toBe("frontend-read-key");
+    expect(headers.has("X-API-Key")).toBe(false);
   });
 
   it("sends JSON POST body for startIndexing", async () => {
@@ -154,12 +157,12 @@ describe("api client", () => {
 
     const calledUrlValue = mockFetch.mock.calls[0][0] as string;
     const calledOptions = mockFetch.mock.calls[0][1] as RequestInit;
-    expect(calledUrlValue).toBe("http://127.0.0.1:8787/api/index");
+    expect(calledUrlValue).toBe("/api/index");
     expect(calledOptions.method).toBe("POST");
     expect(calledOptions.body).toBe(JSON.stringify({}));
     const headers = new Headers(calledOptions.headers as HeadersInit | undefined);
     expect(headers.get("Content-Type")).toBe("application/json");
-    expect(headers.get("X-API-Key")).toBe("frontend-read-key");
+    expect(headers.has("X-API-Key")).toBe(false);
   });
 
   it("calls index status endpoint", async () => {
@@ -180,7 +183,7 @@ describe("api client", () => {
 
     await getIndexStatus();
 
-    const calledUrl = new URL(String(mockFetch.mock.calls[0][0]));
+    const calledUrl = requestUrl();
     expect(calledUrl.pathname).toBe("/api/index/status");
   });
 
@@ -206,7 +209,7 @@ describe("api client", () => {
 
     const response = await getUserProfiles();
 
-    const calledUrl = new URL(String(mockFetch.mock.calls[0][0]));
+    const calledUrl = requestUrl();
     expect(calledUrl.pathname).toBe("/api/profiles");
     expect(Array.isArray(response)).toBe(true);
     expect(response[0].display_name).toBe("Ada");

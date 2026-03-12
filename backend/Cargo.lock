@@ -281,6 +281,7 @@ dependencies = [
  "serial_test",
  "sha2",
  "sqlx",
+ "subtle",
  "tempfile",
  "tokio",
  "tower",

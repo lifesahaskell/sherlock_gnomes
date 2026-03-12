@@ -642,10 +642,6 @@ impl IndexingService {
             };
 
             let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-
             if !include_sensitive_files && is_sensitive_path(path) {
                 continue;
             }
@@ -657,9 +653,8 @@ impl IndexingService {
                 continue;
             }
 
-            let metadata = match fs::metadata(path) {
-                Ok(metadata) => metadata,
-                Err(_) => continue,
+            let Some(metadata) = indexable_file_metadata(path) else {
+                continue;
             };
             if metadata.len() > MAX_INDEXED_FILE_BYTES {
                 continue;
@@ -1096,6 +1091,15 @@ fn include_sensitive_files_in_index() -> bool {
         .unwrap_or(false)
 }
 
+fn indexable_file_metadata(path: &Path) -> Option<fs::Metadata> {
+    let metadata = fs::symlink_metadata(path).ok()?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return None;
+    }
+
+    Some(metadata)
+}
+
 fn parse_env_bool(value: &str) -> Option<bool> {
     match value.trim().to_ascii_lowercase().as_str() {
         "1" | "true" | "yes" | "on" => Some(true),
@@ -1217,5 +1221,21 @@ mod tests {
         assert!(is_sensitive_path(Path::new(".aws/credentials")));
         assert!(is_sensitive_path(Path::new("config/service-token.txt")));
         assert!(!is_sensitive_path(Path::new("src/lib.rs")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn indexable_file_metadata_rejects_symlinks() {
+        use std::{fs, os::unix::fs::symlink};
+        use tempfile::tempdir;
+
+        let temp = tempdir().expect("create temp dir");
+        let outside = tempdir().expect("create outside dir");
+        let target = outside.path().join("secret.txt");
+        fs::write(&target, "secret").expect("write target file");
+        let link = temp.path().join("linked-secret.txt");
+        symlink(&target, &link).expect("create symlink");
+
+        assert!(indexable_file_metadata(&link).is_none());
     }
 }
