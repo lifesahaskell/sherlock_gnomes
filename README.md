@@ -4,6 +4,7 @@ Monorepo scaffold for a local codebase explorer with:
 
 - `backend/`: Rust `axum` API for directory browsing, AI context assembly, repo indexing, and hybrid search.
 - `frontend/`: Next.js app router UI for tree navigation, file viewing, indexing controls, search, "ask with selected files", and profile management.
+- Postgres-backed git repository snapshots that import tracked text files, store derived language analysis, and expose the stored tree/file contents through the UI and API.
 
 ## Project layout
 
@@ -42,6 +43,13 @@ Indexed search and indexing endpoints (require `DATABASE_URL`):
 - `GET /api/search?query=<text>&path=<relative_prefix>&limit=<n>`
 - `GET /api/search/hybrid?query=<text>&path=<relative_prefix>&limit=<n>`
 
+Stored git repository endpoints (require `DATABASE_URL`):
+
+- `POST /api/git/repositories/import` with body `{ "path": "<relative_repo_path>" }`
+- `GET /api/git/repositories`
+- `GET /api/git/repositories/{id}/tree?path=<relative_dir>`
+- `GET /api/git/repositories/{id}/file?path=<relative_file>`
+
 Authentication:
 
 - `GET /health` is public.
@@ -62,6 +70,7 @@ Feature toggle:
 - `HYBRID_SEARCH_ENABLED=false` disables `GET /api/search/hybrid`, which then returns `404` with `"hybrid search is disabled"`.
 
 Path traversal is blocked (`..` and absolute paths are rejected), and all reads are restricted to `EXPLORER_ROOT`.
+Git repository imports are also restricted to repositories that resolve within `EXPLORER_ROOT`.
 
 `GET /api/search` and `GET /api/search/hybrid` return `409` until at least one successful index exists.
 
@@ -150,6 +159,26 @@ Poll status:
 curl http://127.0.0.1:8787/api/index/status \
   -H 'x-api-key: your_read_api_key'
 ```
+
+### 5) Import a git repository snapshot into Postgres
+
+Use the Explorer UI "Repository Archive" section or call the API:
+
+```bash
+curl -X POST http://127.0.0.1:8787/api/git/repositories/import \
+  -H 'x-api-key: your_admin_api_key' \
+  -H 'content-type: application/json' \
+  -d '{"path":"."}'
+```
+
+List stored repositories:
+
+```bash
+curl http://127.0.0.1:8787/api/git/repositories \
+  -H 'x-api-key: your_read_api_key'
+```
+
+Each stored repository record includes branch/head metadata, dirty-state detection, tracked-vs-stored file counts, and a language breakdown for the imported text files.
 
 ## Deployment (Docker Compose)
 

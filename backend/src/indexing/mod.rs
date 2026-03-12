@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     env, fs,
     path::{Component, Path, PathBuf},
     sync::Arc,
@@ -10,6 +10,7 @@ use pgvector::Vector;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Row, migrate::Migrator, postgres::PgPoolOptions};
+use tokio::process::Command;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -28,6 +29,7 @@ const SENSITIVE_EXTENSIONS: [&str; 7] = ["pem", "key", "p12", "pfx", "crt", "cer
 const SENSITIVE_PATH_SEGMENTS: [&str; 3] = [".ssh", ".aws", ".gnupg"];
 const SENSITIVE_FILENAME_TOKENS: [&str; 5] =
     ["secret", "token", "credential", "password", "passwd"];
+const GIT_REPOSITORY_SUMMARY_COMMIT_LENGTH: usize = 8;
 
 #[derive(Clone)]
 pub struct IndexingService {
@@ -96,6 +98,52 @@ pub struct UserProfile {
     pub created_at: String,
 }
 
+#[derive(Debug, Serialize, Clone)]
+pub struct GitRepositoryLanguageStatView {
+    pub language: String,
+    pub file_count: i64,
+    pub total_bytes: i64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct GitRepositoryView {
+    pub id: String,
+    pub path: String,
+    pub name: String,
+    pub head_commit: String,
+    pub branch: Option<String>,
+    pub is_dirty: bool,
+    pub tracked_file_count: i64,
+    pub stored_file_count: i64,
+    pub skipped_binary_files: i64,
+    pub skipped_large_files: i64,
+    pub total_bytes: i64,
+    pub analysis_summary: String,
+    pub imported_at: String,
+    pub languages: Vec<GitRepositoryLanguageStatView>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct StoredGitTreeEntry {
+    pub name: String,
+    pub path: String,
+    pub kind: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct StoredGitTreeView {
+    pub path: String,
+    pub entries: Vec<StoredGitTreeEntry>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct StoredGitFileView {
+    pub path: String,
+    pub content: String,
+    pub language: String,
+    pub line_count: i32,
+}
+
 #[derive(Debug, Clone)]
 pub struct KeywordMatch {
     pub path: String,
@@ -132,6 +180,13 @@ pub enum ProfileError {
     Message(String),
 }
 
+#[derive(Debug)]
+pub enum GitRepositoryError {
+    Invalid(String),
+    NotFound(String),
+    Message(String),
+}
+
 impl SearchError {
     pub fn message(self) -> String {
         match self {
@@ -149,6 +204,14 @@ impl ProfileError {
             Self::DuplicateEmail => "a profile with this email already exists".to_string(),
             Self::NotFound => "profile not found".to_string(),
             Self::Message(message) => message,
+        }
+    }
+}
+
+impl GitRepositoryError {
+    pub fn message(self) -> String {
+        match self {
+            Self::Invalid(message) | Self::NotFound(message) | Self::Message(message) => message,
         }
     }
 }
@@ -322,6 +385,312 @@ impl IndexingService {
 
         let row = row.ok_or(ProfileError::NotFound)?;
         Ok(user_profile_from_row(row))
+    }
+
+    pub async fn import_git_repository(
+        &self,
+        candidate_dir: &Path,
+    ) -> Result<GitRepositoryView, GitRepositoryError> {
+        let repo_root = self.resolve_git_repository_root(candidate_dir).await?;
+        let repository_path =
+            to_relative(&repo_root, self.inner.root_dir.as_ref()).ok_or_else(|| {
+                GitRepositoryError::Invalid(
+                    "path does not point to a git repository inside EXPLORER_ROOT".to_string(),
+                )
+            })?;
+        let repository_name = repo_root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or("root")
+            .to_string();
+        let head_commit = self.git_stdout(&repo_root, &["rev-parse", "HEAD"]).await?;
+        let branch = self
+            .git_stdout(&repo_root, &["branch", "--show-current"])
+            .await?
+            .trim()
+            .to_string();
+        let is_dirty = !self
+            .git_stdout(&repo_root, &["status", "--porcelain"])
+            .await?
+            .trim()
+            .is_empty();
+        let tracked_paths_output = self
+            .git_output_bytes(&repo_root, &["ls-files", "-z"])
+            .await?;
+        let tracked_paths = tracked_paths_output
+            .split(|byte| *byte == 0)
+            .filter(|segment| !segment.is_empty())
+            .map(|segment| String::from_utf8_lossy(segment).to_string())
+            .collect::<Vec<_>>();
+
+        let mut tracked_file_count = 0_i64;
+        let mut stored_file_count = 0_i64;
+        let mut skipped_binary_files = 0_i64;
+        let mut skipped_large_files = 0_i64;
+        let mut total_bytes = 0_i64;
+        let mut language_totals: BTreeMap<String, LanguageTotals> = BTreeMap::new();
+        let mut files = Vec::new();
+
+        for relative_path in tracked_paths {
+            tracked_file_count += 1;
+            let full_path = repo_root.join(&relative_path);
+            let Some(metadata) = indexable_file_metadata(&full_path) else {
+                skipped_binary_files += 1;
+                continue;
+            };
+            if metadata.len() > MAX_INDEXED_FILE_BYTES {
+                skipped_large_files += 1;
+                continue;
+            }
+
+            let bytes = fs::read(&full_path).map_err(|error| {
+                GitRepositoryError::Message(format!(
+                    "failed to read tracked file {relative_path}: {error}"
+                ))
+            })?;
+            if bytes.contains(&0) {
+                skipped_binary_files += 1;
+                continue;
+            }
+
+            let content = match String::from_utf8(bytes) {
+                Ok(content) => content,
+                Err(_) => {
+                    skipped_binary_files += 1;
+                    continue;
+                }
+            };
+            let size_bytes = content.len() as i64;
+            let line_count = content.lines().count().max(1) as i32;
+            let language = language_for_repository_path(&relative_path);
+            let file = StoredRepositoryFile {
+                path: relative_path.clone(),
+                content_hash: sha256_hex(content.as_bytes()),
+                content,
+                size_bytes,
+                line_count,
+                language: language.clone(),
+            };
+
+            stored_file_count += 1;
+            total_bytes += size_bytes;
+            let totals = language_totals.entry(language).or_default();
+            totals.file_count += 1;
+            totals.total_bytes += size_bytes;
+            files.push(file);
+        }
+
+        let analysis_summary = build_git_repository_summary(
+            stored_file_count,
+            &head_commit,
+            (!branch.is_empty()).then_some(branch.as_str()),
+            skipped_binary_files,
+            skipped_large_files,
+        );
+
+        let language_stats = language_totals
+            .into_iter()
+            .map(|(language, totals)| GitRepositoryLanguageStatView {
+                language,
+                file_count: totals.file_count,
+                total_bytes: totals.total_bytes,
+            })
+            .collect::<Vec<_>>();
+
+        let repository_id = self
+            .persist_git_repository(
+                &repository_path,
+                &repository_name,
+                &head_commit,
+                (!branch.is_empty()).then_some(branch.as_str()),
+                is_dirty,
+                tracked_file_count,
+                stored_file_count,
+                skipped_binary_files,
+                skipped_large_files,
+                total_bytes,
+                &analysis_summary,
+                &language_stats,
+                &files,
+            )
+            .await?;
+
+        self.fetch_git_repository(repository_id)
+            .await?
+            .ok_or_else(|| {
+                GitRepositoryError::Message(
+                    "repository import completed but repository record could not be loaded"
+                        .to_string(),
+                )
+            })
+    }
+
+    pub async fn list_git_repositories(
+        &self,
+    ) -> Result<Vec<GitRepositoryView>, GitRepositoryError> {
+        let rows = sqlx::query(
+            "
+            SELECT id, path, name, head_commit, branch, is_dirty,
+                   tracked_file_count, stored_file_count, skipped_binary_files,
+                   skipped_large_files, total_bytes, analysis_summary, imported_at
+            FROM git_repositories
+            ORDER BY imported_at DESC, path ASC
+            ",
+        )
+        .fetch_all(&self.inner.pool)
+        .await
+        .map_err(|error| {
+            GitRepositoryError::Message(format!("failed to list stored git repositories: {error}"))
+        })?;
+
+        let mut repositories = Vec::with_capacity(rows.len());
+        for row in rows {
+            repositories.push(self.git_repository_from_row(row).await?);
+        }
+
+        Ok(repositories)
+    }
+
+    pub async fn stored_git_tree(
+        &self,
+        repository_id: Uuid,
+        path: Option<&str>,
+    ) -> Result<StoredGitTreeView, GitRepositoryError> {
+        self.ensure_git_repository_exists(repository_id).await?;
+
+        let requested_path = path
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("");
+        let stored_paths = sqlx::query_scalar::<_, String>(
+            "
+            SELECT path
+            FROM git_repository_files
+            WHERE repository_id = $1
+            ORDER BY path
+            ",
+        )
+        .bind(repository_id)
+        .fetch_all(&self.inner.pool)
+        .await
+        .map_err(|error| {
+            GitRepositoryError::Message(format!(
+                "failed to load stored git repository tree: {error}"
+            ))
+        })?;
+
+        let prefix = if requested_path.is_empty() {
+            None
+        } else {
+            Some(format!("{requested_path}/"))
+        };
+        let mut entries_by_path = HashMap::<String, StoredGitTreeEntry>::new();
+
+        for stored_path in &stored_paths {
+            let remainder = match &prefix {
+                None => stored_path.as_str(),
+                Some(prefix) => {
+                    let Some(remainder) = stored_path.strip_prefix(prefix) else {
+                        continue;
+                    };
+                    remainder
+                }
+            };
+
+            if remainder.is_empty() {
+                continue;
+            }
+
+            let Some(first_segment) = remainder.split('/').next() else {
+                continue;
+            };
+            if remainder.contains('/') {
+                let child_path = if requested_path.is_empty() {
+                    first_segment.to_string()
+                } else {
+                    format!("{requested_path}/{first_segment}")
+                };
+                entries_by_path
+                    .entry(child_path.clone())
+                    .or_insert_with(|| StoredGitTreeEntry {
+                        name: first_segment.to_string(),
+                        path: child_path,
+                        kind: "directory".to_string(),
+                    });
+            } else {
+                let child_path = if requested_path.is_empty() {
+                    first_segment.to_string()
+                } else {
+                    format!("{requested_path}/{first_segment}")
+                };
+                entries_by_path
+                    .entry(child_path.clone())
+                    .or_insert_with(|| StoredGitTreeEntry {
+                        name: first_segment.to_string(),
+                        path: child_path,
+                        kind: "file".to_string(),
+                    });
+            }
+        }
+
+        if !requested_path.is_empty() && entries_by_path.is_empty() {
+            return Err(GitRepositoryError::Invalid(
+                "path is not a directory".to_string(),
+            ));
+        }
+
+        let mut entries = entries_by_path.into_values().collect::<Vec<_>>();
+        entries.sort_by(
+            |left, right| match (left.kind.as_str(), right.kind.as_str()) {
+                ("directory", "file") => std::cmp::Ordering::Less,
+                ("file", "directory") => std::cmp::Ordering::Greater,
+                _ => left.name.cmp(&right.name),
+            },
+        );
+
+        Ok(StoredGitTreeView {
+            path: requested_path.to_string(),
+            entries,
+        })
+    }
+
+    pub async fn stored_git_file(
+        &self,
+        repository_id: Uuid,
+        path: &str,
+    ) -> Result<StoredGitFileView, GitRepositoryError> {
+        let row = sqlx::query(
+            "
+            SELECT path, content, language, line_count
+            FROM git_repository_files
+            WHERE repository_id = $1 AND path = $2
+            ",
+        )
+        .bind(repository_id)
+        .bind(path)
+        .fetch_optional(&self.inner.pool)
+        .await
+        .map_err(|error| {
+            GitRepositoryError::Message(format!(
+                "failed to load stored repository file {path}: {error}"
+            ))
+        })?;
+
+        match row {
+            Some(row) => Ok(StoredGitFileView {
+                path: row.get("path"),
+                content: row.get("content"),
+                language: row.get("language"),
+                line_count: row.get("line_count"),
+            }),
+            None => {
+                self.ensure_git_repository_exists(repository_id).await?;
+                Err(GitRepositoryError::NotFound(
+                    "stored repository file not found".to_string(),
+                ))
+            }
+        }
     }
 
     pub async fn keyword_search(
@@ -957,6 +1326,336 @@ impl IndexingService {
 
         Ok(row.map(job_view_from_row))
     }
+
+    async fn resolve_git_repository_root(
+        &self,
+        candidate_dir: &Path,
+    ) -> Result<PathBuf, GitRepositoryError> {
+        let repo_root = match self
+            .git_stdout(candidate_dir, &["rev-parse", "--show-toplevel"])
+            .await
+        {
+            Ok(repo_root) => repo_root,
+            Err(GitRepositoryError::Message(message))
+                if message.starts_with("git [\"rev-parse\", \"--show-toplevel\"] failed:") =>
+            {
+                return Err(GitRepositoryError::Invalid(
+                    "path does not point to a git repository inside EXPLORER_ROOT".to_string(),
+                ));
+            }
+            Err(error) => return Err(error),
+        };
+        let repo_root = PathBuf::from(repo_root.trim());
+        if !repo_root.starts_with(self.inner.root_dir.as_ref()) {
+            return Err(GitRepositoryError::Invalid(
+                "path does not point to a git repository inside EXPLORER_ROOT".to_string(),
+            ));
+        }
+        Ok(repo_root)
+    }
+
+    async fn persist_git_repository(
+        &self,
+        path: &str,
+        name: &str,
+        head_commit: &str,
+        branch: Option<&str>,
+        is_dirty: bool,
+        tracked_file_count: i64,
+        stored_file_count: i64,
+        skipped_binary_files: i64,
+        skipped_large_files: i64,
+        total_bytes: i64,
+        analysis_summary: &str,
+        language_stats: &[GitRepositoryLanguageStatView],
+        files: &[StoredRepositoryFile],
+    ) -> Result<Uuid, GitRepositoryError> {
+        let mut tx = self.inner.pool.begin().await.map_err(|error| {
+            GitRepositoryError::Message(format!(
+                "failed to open git repository persistence transaction: {error}"
+            ))
+        })?;
+
+        let repository_id: Uuid = sqlx::query_scalar(
+            "
+            INSERT INTO git_repositories (
+                id,
+                path,
+                name,
+                head_commit,
+                branch,
+                is_dirty,
+                tracked_file_count,
+                stored_file_count,
+                skipped_binary_files,
+                skipped_large_files,
+                total_bytes,
+                analysis_summary,
+                imported_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
+            ON CONFLICT (path)
+            DO UPDATE SET
+                name = EXCLUDED.name,
+                head_commit = EXCLUDED.head_commit,
+                branch = EXCLUDED.branch,
+                is_dirty = EXCLUDED.is_dirty,
+                tracked_file_count = EXCLUDED.tracked_file_count,
+                stored_file_count = EXCLUDED.stored_file_count,
+                skipped_binary_files = EXCLUDED.skipped_binary_files,
+                skipped_large_files = EXCLUDED.skipped_large_files,
+                total_bytes = EXCLUDED.total_bytes,
+                analysis_summary = EXCLUDED.analysis_summary,
+                imported_at = NOW()
+            RETURNING id
+            ",
+        )
+        .bind(Uuid::new_v4())
+        .bind(path)
+        .bind(name)
+        .bind(head_commit)
+        .bind(branch)
+        .bind(is_dirty)
+        .bind(tracked_file_count)
+        .bind(stored_file_count)
+        .bind(skipped_binary_files)
+        .bind(skipped_large_files)
+        .bind(total_bytes)
+        .bind(analysis_summary)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|error| {
+            GitRepositoryError::Message(format!("failed to upsert git repository record: {error}"))
+        })?;
+
+        sqlx::query("DELETE FROM git_repository_language_stats WHERE repository_id = $1")
+            .bind(repository_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| {
+                GitRepositoryError::Message(format!(
+                    "failed to delete old git repository language stats: {error}"
+                ))
+            })?;
+
+        sqlx::query("DELETE FROM git_repository_files WHERE repository_id = $1")
+            .bind(repository_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| {
+                GitRepositoryError::Message(format!(
+                    "failed to delete old git repository files: {error}"
+                ))
+            })?;
+
+        for stat in language_stats {
+            sqlx::query(
+                "
+                INSERT INTO git_repository_language_stats (
+                    repository_id,
+                    language,
+                    file_count,
+                    total_bytes
+                )
+                VALUES ($1, $2, $3, $4)
+                ",
+            )
+            .bind(repository_id)
+            .bind(&stat.language)
+            .bind(stat.file_count)
+            .bind(stat.total_bytes)
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| {
+                GitRepositoryError::Message(format!(
+                    "failed to insert git repository language stats: {error}"
+                ))
+            })?;
+        }
+
+        for file in files {
+            sqlx::query(
+                "
+                INSERT INTO git_repository_files (
+                    repository_id,
+                    path,
+                    content,
+                    content_hash,
+                    size_bytes,
+                    line_count,
+                    language,
+                    imported_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+                ",
+            )
+            .bind(repository_id)
+            .bind(&file.path)
+            .bind(&file.content)
+            .bind(&file.content_hash)
+            .bind(file.size_bytes)
+            .bind(file.line_count)
+            .bind(&file.language)
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| {
+                GitRepositoryError::Message(format!(
+                    "failed to insert stored git repository file {}: {error}",
+                    file.path
+                ))
+            })?;
+        }
+
+        tx.commit().await.map_err(|error| {
+            GitRepositoryError::Message(format!(
+                "failed to commit git repository persistence transaction: {error}"
+            ))
+        })?;
+
+        Ok(repository_id)
+    }
+
+    async fn fetch_git_repository(
+        &self,
+        repository_id: Uuid,
+    ) -> Result<Option<GitRepositoryView>, GitRepositoryError> {
+        let row = sqlx::query(
+            "
+            SELECT id, path, name, head_commit, branch, is_dirty,
+                   tracked_file_count, stored_file_count, skipped_binary_files,
+                   skipped_large_files, total_bytes, analysis_summary, imported_at
+            FROM git_repositories
+            WHERE id = $1
+            ",
+        )
+        .bind(repository_id)
+        .fetch_optional(&self.inner.pool)
+        .await
+        .map_err(|error| {
+            GitRepositoryError::Message(format!("failed to fetch git repository by id: {error}"))
+        })?;
+
+        match row {
+            Some(row) => Ok(Some(self.git_repository_from_row(row).await?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn git_repository_from_row(
+        &self,
+        row: sqlx::postgres::PgRow,
+    ) -> Result<GitRepositoryView, GitRepositoryError> {
+        let repository_id: Uuid = row.get("id");
+        let imported_at: DateTime<Utc> = row.get("imported_at");
+        let languages = self.load_git_repository_languages(repository_id).await?;
+
+        Ok(GitRepositoryView {
+            id: repository_id.to_string(),
+            path: row.get("path"),
+            name: row.get("name"),
+            head_commit: row.get("head_commit"),
+            branch: row.get("branch"),
+            is_dirty: row.get("is_dirty"),
+            tracked_file_count: row.get("tracked_file_count"),
+            stored_file_count: row.get("stored_file_count"),
+            skipped_binary_files: row.get("skipped_binary_files"),
+            skipped_large_files: row.get("skipped_large_files"),
+            total_bytes: row.get("total_bytes"),
+            analysis_summary: row.get("analysis_summary"),
+            imported_at: imported_at.to_rfc3339(),
+            languages,
+        })
+    }
+
+    async fn load_git_repository_languages(
+        &self,
+        repository_id: Uuid,
+    ) -> Result<Vec<GitRepositoryLanguageStatView>, GitRepositoryError> {
+        let rows = sqlx::query(
+            "
+            SELECT language, file_count, total_bytes
+            FROM git_repository_language_stats
+            WHERE repository_id = $1
+            ORDER BY language ASC
+            ",
+        )
+        .bind(repository_id)
+        .fetch_all(&self.inner.pool)
+        .await
+        .map_err(|error| {
+            GitRepositoryError::Message(format!(
+                "failed to fetch git repository language stats: {error}"
+            ))
+        })?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| GitRepositoryLanguageStatView {
+                language: row.get("language"),
+                file_count: row.get("file_count"),
+                total_bytes: row.get("total_bytes"),
+            })
+            .collect())
+    }
+
+    async fn ensure_git_repository_exists(
+        &self,
+        repository_id: Uuid,
+    ) -> Result<(), GitRepositoryError> {
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM git_repositories WHERE id = $1)")
+                .bind(repository_id)
+                .fetch_one(&self.inner.pool)
+                .await
+                .map_err(|error| {
+                    GitRepositoryError::Message(format!(
+                        "failed to check stored git repository existence: {error}"
+                    ))
+                })?;
+
+        if exists {
+            Ok(())
+        } else {
+            Err(GitRepositoryError::NotFound(
+                "stored git repository not found".to_string(),
+            ))
+        }
+    }
+
+    async fn git_stdout(
+        &self,
+        repo_root: &Path,
+        args: &[&str],
+    ) -> Result<String, GitRepositoryError> {
+        let output = self.git_output_bytes(repo_root, args).await?;
+        Ok(String::from_utf8_lossy(&output).trim().to_string())
+    }
+
+    async fn git_output_bytes(
+        &self,
+        repo_root: &Path,
+        args: &[&str],
+    ) -> Result<Vec<u8>, GitRepositoryError> {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(repo_root)
+            .args(args)
+            .output()
+            .await
+            .map_err(|error| {
+                GitRepositoryError::Message(format!("failed to execute git {:?}: {error}", args))
+            })?;
+
+        if output.status.success() {
+            Ok(output.stdout)
+        } else {
+            Err(GitRepositoryError::Message(format!(
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&output.stderr).trim()
+            )))
+        }
+    }
 }
 
 async fn load_migrator() -> Result<Migrator, sqlx::migrate::MigrateError> {
@@ -968,6 +1667,22 @@ struct ChangedFile {
     path: String,
     hash: String,
     content: String,
+}
+
+#[derive(Debug)]
+struct StoredRepositoryFile {
+    path: String,
+    content: String,
+    content_hash: String,
+    size_bytes: i64,
+    line_count: i32,
+    language: String,
+}
+
+#[derive(Debug, Default)]
+struct LanguageTotals {
+    file_count: i64,
+    total_bytes: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -1054,6 +1769,57 @@ fn normalized_path_prefix(path_filter: Option<&str>) -> Option<String> {
 fn sha256_hex(input: &[u8]) -> String {
     let digest = Sha256::digest(input);
     format!("{digest:x}")
+}
+
+fn language_for_repository_path(path: &str) -> String {
+    let extension = Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    match extension.as_str() {
+        "rs" => "Rust",
+        "md" | "markdown" => "Markdown",
+        "js" | "jsx" => "JavaScript",
+        "ts" | "tsx" => "TypeScript",
+        "json" => "JSON",
+        "toml" => "TOML",
+        "yml" | "yaml" => "YAML",
+        "sql" => "SQL",
+        "py" => "Python",
+        "go" => "Go",
+        "java" => "Java",
+        "c" | "h" => "C",
+        "cc" | "cpp" | "cxx" | "hpp" => "C++",
+        "html" => "HTML",
+        "css" => "CSS",
+        "sh" | "bash" => "Shell",
+        _ => "Text",
+    }
+    .to_string()
+}
+
+fn build_git_repository_summary(
+    stored_file_count: i64,
+    head_commit: &str,
+    branch: Option<&str>,
+    skipped_binary_files: i64,
+    skipped_large_files: i64,
+) -> String {
+    let short_commit = head_commit
+        .chars()
+        .take(GIT_REPOSITORY_SUMMARY_COMMIT_LENGTH)
+        .collect::<String>();
+    let branch_segment = branch
+        .filter(|value| !value.is_empty())
+        .map(|value| format!(" on branch {value}"))
+        .unwrap_or_default();
+
+    format!(
+        "Stored {stored_file_count} text files from commit {short_commit}{branch_segment}. \
+Skipped {skipped_binary_files} binary files and {skipped_large_files} oversized files."
+    )
 }
 
 fn first_matching_line(start_line: i32, content: &str, query: &str) -> (i32, String) {

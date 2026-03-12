@@ -1,4 +1,10 @@
-use std::{fs, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::Arc,
+    time::Duration,
+};
 
 use axum::{
     Router,
@@ -133,6 +139,44 @@ fn set_test_env_var(key: &str, value: &str) {
 fn configure_mock_indexing_env(database_url: &str) {
     set_test_env_var("DATABASE_URL", database_url);
     set_test_env_var("EMBEDDING_PROVIDER", "mock");
+}
+
+fn run_git(repo_dir: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .current_dir(repo_dir)
+        .args(args)
+        .output()
+        .expect("run git command");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: stdout={}, stderr={}",
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn create_committed_git_repository(repo_dir: &Path) {
+    fs::create_dir_all(repo_dir.join("src")).expect("create repo src dir");
+    fs::create_dir_all(repo_dir.join("assets")).expect("create repo assets dir");
+    fs::write(repo_dir.join("README.md"), "# Sample Repo\n").expect("write README");
+    fs::write(
+        repo_dir.join("src/lib.rs"),
+        "pub fn answer() -> u32 {\n    42\n}\n",
+    )
+    .expect("write lib.rs");
+    fs::write(repo_dir.join("assets/logo.bin"), [0_u8, 159, 146, 150]).expect("write binary file");
+    fs::write(repo_dir.join("scratch.txt"), "not tracked\n").expect("write untracked file");
+
+    run_git(repo_dir, &["init"]);
+    run_git(repo_dir, &["config", "user.email", "tests@example.com"]);
+    run_git(repo_dir, &["config", "user.name", "Sherlock Tests"]);
+    run_git(repo_dir, &["checkout", "-b", "main"]);
+    run_git(
+        repo_dir,
+        &["add", "README.md", "src/lib.rs", "assets/logo.bin"],
+    );
+    run_git(repo_dir, &["commit", "-m", "Initial import fixture"]);
 }
 
 async fn wait_for_indexing_completion(app: &Router, failure_context: &str, timeout_message: &str) {
@@ -298,10 +342,21 @@ async fn read_key_cannot_access_admin_endpoints() {
     assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
 
     let admin = app
+        .clone()
         .oneshot(post_request("/api/index", json!({})))
         .await
         .expect("send admin-key admin request");
     assert_eq!(admin.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let git_import = app
+        .oneshot(post_request_with_key(
+            "/api/git/repositories/import",
+            json!({ "path": "." }),
+            TEST_READ_API_KEY,
+        ))
+        .await
+        .expect("send read-key git import request");
+    assert_eq!(git_import.status(), StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
@@ -473,6 +528,23 @@ async fn indexed_search_requires_database_configuration() {
         .await
         .expect("send index status request");
     assert_eq!(index_status.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let git_import = app
+        .clone()
+        .oneshot(post_request(
+            "/api/git/repositories/import",
+            json!({ "path": "." }),
+        ))
+        .await
+        .expect("send git import request");
+    assert_eq!(git_import.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let git_repositories = app
+        .clone()
+        .oneshot(get_request("/api/git/repositories"))
+        .await
+        .expect("send git repository list request");
+    assert_eq!(git_repositories.status(), StatusCode::SERVICE_UNAVAILABLE);
 
     let profile_create = app
         .clone()
@@ -1113,6 +1185,221 @@ async fn indexing_skips_symlinked_files_that_escape_root() {
 
     assert!(!symlink_indexed);
     assert!(visible_indexed);
+}
+
+#[tokio::test]
+#[serial]
+async fn git_repository_import_persists_tracked_text_files_and_exposes_stored_tree() {
+    let Some(test_database_url) = std::env::var("TEST_DATABASE_URL").ok() else {
+        return;
+    };
+
+    let temp = tempdir().expect("create temp dir");
+    let repo_dir = temp.path().join("sample-repo");
+    fs::create_dir_all(&repo_dir).expect("create repo dir");
+    create_committed_git_repository(&repo_dir);
+    let root = temp.path().canonicalize().expect("canonicalize root");
+
+    configure_mock_indexing_env(&test_database_url);
+
+    let indexing = load_indexing_from_env(Arc::new(root.clone()))
+        .await
+        .expect("load indexing from env")
+        .expect("indexing service should be configured");
+
+    let pool = PgPool::connect(&test_database_url)
+        .await
+        .expect("connect test database");
+    sqlx::query(
+        "
+        TRUNCATE TABLE
+            semantic_blocks,
+            indexed_files,
+            index_jobs,
+            user_profiles,
+            git_repository_language_stats,
+            git_repository_files,
+            git_repositories
+        RESTART IDENTITY
+        ",
+    )
+    .execute(&pool)
+    .await
+    .expect("truncate repo snapshot tables");
+
+    let app = build_app_with_indexing(root, Some(indexing));
+
+    let imported = app
+        .clone()
+        .oneshot(post_request(
+            "/api/git/repositories/import",
+            json!({ "path": "sample-repo" }),
+        ))
+        .await
+        .expect("send git repository import request");
+    assert_eq!(imported.status(), StatusCode::CREATED);
+    let imported_payload = body_json(imported.into_body()).await;
+    assert_eq!(imported_payload["path"], "sample-repo");
+    assert_eq!(imported_payload["name"], "sample-repo");
+    assert_eq!(imported_payload["branch"], "main");
+    assert_eq!(imported_payload["tracked_file_count"], 3);
+    assert_eq!(imported_payload["stored_file_count"], 2);
+    assert_eq!(imported_payload["skipped_binary_files"], 1);
+    assert_eq!(imported_payload["skipped_large_files"], 0);
+    assert_eq!(imported_payload["is_dirty"], true);
+    assert!(imported_payload["head_commit"].as_str().is_some());
+    assert!(
+        imported_payload["analysis_summary"]
+            .as_str()
+            .expect("analysis summary")
+            .contains("Stored 2 text files")
+    );
+    let repository_id = imported_payload["id"]
+        .as_str()
+        .expect("repository id")
+        .to_string();
+    let language_names = imported_payload["languages"]
+        .as_array()
+        .expect("language array")
+        .iter()
+        .map(|item| {
+            item["language"]
+                .as_str()
+                .expect("language name")
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        language_names,
+        vec!["Markdown".to_string(), "Rust".to_string()]
+    );
+
+    let repositories = app
+        .clone()
+        .oneshot(get_request("/api/git/repositories"))
+        .await
+        .expect("send repository list request");
+    assert_eq!(repositories.status(), StatusCode::OK);
+    let repositories_payload = body_json(repositories.into_body()).await;
+    let repositories_array = repositories_payload
+        .as_array()
+        .expect("repository list array");
+    assert_eq!(repositories_array.len(), 1);
+    assert_eq!(repositories_array[0]["id"], repository_id);
+
+    let root_tree = app
+        .clone()
+        .oneshot(get_request(&format!(
+            "/api/git/repositories/{repository_id}/tree"
+        )))
+        .await
+        .expect("send repository tree request");
+    assert_eq!(root_tree.status(), StatusCode::OK);
+    let root_tree_payload = body_json(root_tree.into_body()).await;
+    assert_eq!(root_tree_payload["path"], "");
+    let root_entries = root_tree_payload["entries"]
+        .as_array()
+        .expect("tree entries");
+    assert_eq!(root_entries.len(), 2);
+    assert_eq!(root_entries[0]["name"], "src");
+    assert_eq!(root_entries[0]["kind"], "directory");
+    assert_eq!(root_entries[1]["name"], "README.md");
+    assert_eq!(root_entries[1]["kind"], "file");
+
+    let nested_tree = app
+        .clone()
+        .oneshot(get_request(&format!(
+            "/api/git/repositories/{repository_id}/tree?path=src"
+        )))
+        .await
+        .expect("send nested repository tree request");
+    assert_eq!(nested_tree.status(), StatusCode::OK);
+    let nested_tree_payload = body_json(nested_tree.into_body()).await;
+    let nested_entries = nested_tree_payload["entries"]
+        .as_array()
+        .expect("nested tree entries");
+    assert_eq!(nested_entries.len(), 1);
+    assert_eq!(nested_entries[0]["path"], "src/lib.rs");
+
+    let stored_file = app
+        .oneshot(get_request(&format!(
+            "/api/git/repositories/{repository_id}/file?path=src/lib.rs"
+        )))
+        .await
+        .expect("send stored repository file request");
+    assert_eq!(stored_file.status(), StatusCode::OK);
+    let stored_file_payload = body_json(stored_file.into_body()).await;
+    assert_eq!(stored_file_payload["path"], "src/lib.rs");
+    assert_eq!(stored_file_payload["language"], "Rust");
+    assert_eq!(stored_file_payload["line_count"], 3);
+    assert!(
+        stored_file_payload["content"]
+            .as_str()
+            .expect("stored file content")
+            .contains("pub fn answer")
+    );
+
+    let stored_paths: Vec<String> = sqlx::query_scalar(
+        "
+        SELECT path
+        FROM git_repository_files
+        WHERE repository_id = $1
+        ORDER BY path
+        ",
+    )
+    .bind(uuid::Uuid::parse_str(&repository_id).expect("parse repository id"))
+    .fetch_all(&pool)
+    .await
+    .expect("query stored repository paths");
+    assert_eq!(
+        stored_paths,
+        vec!["README.md".to_string(), "src/lib.rs".to_string()]
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn git_repository_import_rejects_unsafe_and_non_repository_paths() {
+    let Some(test_database_url) = std::env::var("TEST_DATABASE_URL").ok() else {
+        return;
+    };
+
+    let temp = tempdir().expect("create temp dir");
+    fs::create_dir_all(temp.path().join("plain-dir")).expect("create plain dir");
+    let root = temp.path().canonicalize().expect("canonicalize root");
+
+    configure_mock_indexing_env(&test_database_url);
+
+    let indexing = load_indexing_from_env(Arc::new(root.clone()))
+        .await
+        .expect("load indexing from env")
+        .expect("indexing service should be configured");
+
+    let app = build_app_with_indexing(root, Some(indexing));
+
+    let traversal = app
+        .clone()
+        .oneshot(post_request(
+            "/api/git/repositories/import",
+            json!({ "path": "../outside" }),
+        ))
+        .await
+        .expect("send traversal repository import request");
+    assert_eq!(traversal.status(), StatusCode::BAD_REQUEST);
+
+    let missing_git = app
+        .oneshot(post_request(
+            "/api/git/repositories/import",
+            json!({ "path": "plain-dir" }),
+        ))
+        .await
+        .expect("send non repository import request");
+    assert_eq!(missing_git.status(), StatusCode::BAD_REQUEST);
+    let missing_git_payload = body_json(missing_git.into_body()).await;
+    assert_eq!(
+        missing_git_payload["error"],
+        "path does not point to a git repository inside EXPLORER_ROOT"
+    );
 }
 
 #[tokio::test]

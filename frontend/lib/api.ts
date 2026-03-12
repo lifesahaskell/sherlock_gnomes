@@ -64,6 +64,47 @@ export type StartIndexingResponse = {
   replaced_pending: boolean;
 };
 
+export type GitRepositoryLanguageStat = {
+  language: string;
+  file_count: number;
+  total_bytes: number;
+};
+
+export type GitRepository = {
+  id: string;
+  path: string;
+  name: string;
+  head_commit: string;
+  branch: string | null;
+  is_dirty: boolean;
+  tracked_file_count: number;
+  stored_file_count: number;
+  skipped_binary_files: number;
+  skipped_large_files: number;
+  total_bytes: number;
+  analysis_summary: string;
+  imported_at: string;
+  languages: GitRepositoryLanguageStat[];
+};
+
+export type StoredGitTreeEntry = {
+  name: string;
+  path: string;
+  kind: "directory" | "file";
+};
+
+export type StoredGitTreeResponse = {
+  path: string;
+  entries: StoredGitTreeEntry[];
+};
+
+export type StoredGitFileResponse = {
+  path: string;
+  content: string;
+  language: string;
+  line_count: number;
+};
+
 export type AskResponse = {
   guidance: string;
   context: { path: string; preview: string }[];
@@ -184,6 +225,34 @@ export function startIndexing(): Promise<StartIndexingResponse> {
 
 export function getIndexStatus(): Promise<IndexStatusResponse> {
   return fetchJson<IndexStatusResponse>("/api/index/status");
+}
+
+export function importGitRepository(path: string): Promise<GitRepository> {
+  return fetchJson<GitRepository>("/api/git/repositories/import", {
+    method: "POST",
+    body: JSON.stringify({ path })
+  });
+}
+
+export function getGitRepositories(): Promise<GitRepository[]> {
+  return fetchJson<GitRepository[]>("/api/git/repositories");
+}
+
+export function getGitRepositoryTree(
+  repositoryId: string,
+  path = ""
+): Promise<StoredGitTreeResponse> {
+  const query = path ? `?path=${encodeURIComponent(path)}` : "";
+  return fetchJson<StoredGitTreeResponse>(`/api/git/repositories/${repositoryId}/tree${query}`);
+}
+
+export function getGitRepositoryFile(
+  repositoryId: string,
+  path: string
+): Promise<StoredGitFileResponse> {
+  return fetchJson<StoredGitFileResponse>(
+    `/api/git/repositories/${repositoryId}/file?path=${encodeURIComponent(path)}`
+  );
 }
 
 export function getUserProfiles(): Promise<UserProfile[]> {

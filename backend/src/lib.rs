@@ -28,8 +28,8 @@ mod indexing;
 pub use indexing::IndexingService;
 pub use indexing::fuzz_parse_semantic_blocks;
 use indexing::{
-    EnqueueIndexResponse, HybridSearch, IndexJobView, IndexStatusView, ProfileError, SearchError,
-    UserProfile,
+    EnqueueIndexResponse, GitRepositoryError, GitRepositoryView, HybridSearch, IndexJobView,
+    IndexStatusView, ProfileError, SearchError, StoredGitFileView, StoredGitTreeView, UserProfile,
 };
 
 #[derive(Clone)]
@@ -165,6 +165,11 @@ struct UpdateProfileRequest {
     display_name: Option<String>,
     email: Option<String>,
     bio: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ImportGitRepositoryRequest {
+    path: String,
 }
 
 #[derive(Serialize)]
@@ -351,6 +356,10 @@ pub fn build_app_with_indexing_and_hybrid_toggle_and_security(
         .route("/api/search/hybrid", get(search_hybrid))
         .route("/api/index", post(start_indexing))
         .route("/api/index/status", get(index_status))
+        .route("/api/git/repositories", get(list_git_repositories))
+        .route("/api/git/repositories/import", post(import_git_repository))
+        .route("/api/git/repositories/{id}/tree", get(get_stored_git_tree))
+        .route("/api/git/repositories/{id}/file", get(get_stored_git_file))
         .route("/api/profiles", get(list_profiles).post(create_profile))
         .route("/api/profiles/{id}", put(update_profile))
         .route("/api/ask", post(ask))
@@ -448,6 +457,10 @@ fn api_scope_for_request(method: &Method, path: &str) -> Option<ApiScope> {
     }
 
     if path == "/api/index" && *method == Method::POST {
+        return Some(ApiScope::Admin);
+    }
+
+    if path == "/api/git/repositories/import" && *method == Method::POST {
         return Some(ApiScope::Admin);
     }
 
@@ -726,6 +739,65 @@ async fn index_status(
     }))
 }
 
+async fn import_git_repository(
+    State(state): State<AppState>,
+    Json(request): Json<ImportGitRepositoryRequest>,
+) -> Result<(StatusCode, Json<GitRepositoryView>), AppError> {
+    let candidate_dir = resolve_repository_import_candidate(&state.root_dir, &request.path)?;
+    let service = repository_service(&state)?;
+    let repository = service
+        .import_git_repository(&candidate_dir)
+        .await
+        .map_err(app_error_from_git_repository)?;
+
+    Ok((StatusCode::CREATED, Json(repository)))
+}
+
+async fn list_git_repositories(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<GitRepositoryView>>, AppError> {
+    let service = repository_service(&state)?;
+    let repositories = service
+        .list_git_repositories()
+        .await
+        .map_err(app_error_from_git_repository)?;
+
+    Ok(Json(repositories))
+}
+
+async fn get_stored_git_tree(
+    PathParam(repository_id): PathParam<uuid::Uuid>,
+    State(state): State<AppState>,
+    Query(query): Query<TreeQuery>,
+) -> Result<Json<StoredGitTreeView>, AppError> {
+    validate_filter_path(query.path.as_deref())?;
+    let service = repository_service(&state)?;
+    let tree = service
+        .stored_git_tree(repository_id, query.path.as_deref())
+        .await
+        .map_err(app_error_from_git_repository)?;
+
+    Ok(Json(tree))
+}
+
+async fn get_stored_git_file(
+    PathParam(repository_id): PathParam<uuid::Uuid>,
+    State(state): State<AppState>,
+    Query(query): Query<FileQuery>,
+) -> Result<Json<StoredGitFileView>, AppError> {
+    if query.path.trim().is_empty() {
+        return Err(AppError::bad_request("path cannot be empty"));
+    }
+    validate_relative_request_path(&query.path)?;
+    let service = repository_service(&state)?;
+    let file = service
+        .stored_git_file(repository_id, &query.path)
+        .await
+        .map_err(app_error_from_git_repository)?;
+
+    Ok(Json(file))
+}
+
 async fn create_profile(
     State(state): State<AppState>,
     Json(request): Json<CreateProfileRequest>,
@@ -801,6 +873,14 @@ fn indexing_service(state: &AppState) -> Result<Arc<IndexingService>, AppError> 
     })
 }
 
+fn repository_service(state: &AppState) -> Result<Arc<IndexingService>, AppError> {
+    state.indexing.clone().ok_or_else(|| {
+        AppError::service_unavailable(
+            "DATABASE_URL is required for repository import and storage endpoints",
+        )
+    })
+}
+
 fn app_error_from_search(error: SearchError) -> AppError {
     match error {
         SearchError::NoIndex => AppError::conflict(error.message()),
@@ -814,6 +894,31 @@ fn app_error_from_profile(error: ProfileError) -> AppError {
         ProfileError::NotFound => AppError::not_found(error.message()),
         ProfileError::Message(message) => AppError::internal(message),
     }
+}
+
+fn app_error_from_git_repository(error: GitRepositoryError) -> AppError {
+    match error {
+        GitRepositoryError::Invalid(message) => AppError::bad_request(message),
+        GitRepositoryError::NotFound(message) => AppError::not_found(message),
+        GitRepositoryError::Message(message) => AppError::internal(message),
+    }
+}
+
+fn resolve_repository_import_candidate(
+    root: &StdPath,
+    requested_path: &str,
+) -> Result<PathBuf, AppError> {
+    let trimmed = requested_path.trim();
+    if trimmed.is_empty() {
+        return Ok(root.to_path_buf());
+    }
+
+    let resolved = resolve_within_root(root, Some(trimmed))?;
+    if !resolved.is_dir() {
+        return Err(AppError::bad_request("path is not a directory"));
+    }
+
+    Ok(resolved)
 }
 
 fn validate_create_profile_request(

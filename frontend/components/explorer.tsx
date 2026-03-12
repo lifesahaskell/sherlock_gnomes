@@ -5,16 +5,22 @@ import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   AskResponse,
+  GitRepository,
   HybridSearchMatch,
   IndexStatusResponse,
   SearchMatch,
+  StoredGitTreeEntry,
   TreeEntry,
   askCodebase,
   getUserProfiles,
   getFile,
+  getGitRepositories,
+  getGitRepositoryFile,
+  getGitRepositoryTree,
   getHealth,
   getIndexStatus,
   getTree,
+  importGitRepository,
   searchCode,
   searchHybrid,
   startIndexing,
@@ -29,6 +35,8 @@ type BusyState = {
   ask: boolean;
   index: boolean;
   profile: boolean;
+  repository: boolean;
+  repositoryFile: boolean;
 };
 
 type SearchMode = "hybrid" | "keyword";
@@ -39,7 +47,9 @@ const INITIAL_BUSY: BusyState = {
   search: false,
   ask: false,
   index: false,
-  profile: false
+  profile: false,
+  repository: false,
+  repositoryFile: false
 };
 
 export default function Explorer() {
@@ -72,6 +82,11 @@ export default function Explorer() {
   const [editingProfileId, setEditingProfileId] = useState<number | null>(null);
 
   const [indexStatus, setIndexStatus] = useState<IndexStatusResponse | null>(null);
+  const [repositoryImportPath, setRepositoryImportPath] = useState(".");
+  const [gitRepositories, setGitRepositories] = useState<GitRepository[]>([]);
+  const [selectedGitRepositoryId, setSelectedGitRepositoryId] = useState<string>("");
+  const [storedRepositoryPath, setStoredRepositoryPath] = useState("");
+  const [storedRepositoryEntries, setStoredRepositoryEntries] = useState<StoredGitTreeEntry[]>([]);
 
   const breadcrumbs = useMemo(() => {
     if (!currentPath) {
@@ -87,6 +102,10 @@ export default function Explorer() {
   const effectiveSearchMode: SearchMode = hybridSearchEnabled ? searchMode : "keyword";
   const searchMatchCount =
     effectiveSearchMode === "hybrid" ? hybridResults.length : keywordResults.length;
+  const selectedGitRepository = useMemo(
+    () => gitRepositories.find((repository) => repository.id === selectedGitRepositoryId) ?? null,
+    [gitRepositories, selectedGitRepositoryId]
+  );
   const shouldPollIndexStatus = Boolean(
     indexStatus?.pending ||
       indexStatus?.current_job?.status === "queued" ||
@@ -97,6 +116,26 @@ export default function Explorer() {
     void loadTree("");
     void loadHealth();
     void loadProfiles();
+    void (async () => {
+      try {
+        const repositories = await getGitRepositories();
+        setGitRepositories(repositories);
+        if (repositories.length === 0) {
+          setSelectedGitRepositoryId("");
+          setStoredRepositoryPath("");
+          setStoredRepositoryEntries([]);
+          return;
+        }
+
+        const firstRepository = repositories[0];
+        setSelectedGitRepositoryId(firstRepository.id);
+        const tree = await getGitRepositoryTree(firstRepository.id, "");
+        setStoredRepositoryPath(tree.path);
+        setStoredRepositoryEntries(tree.entries);
+      } catch {
+        setGitRepositories([]);
+      }
+    })();
     void refreshIndexStatus(false);
   }, []);
 
@@ -206,6 +245,37 @@ export default function Explorer() {
     }
   }
 
+  async function loadStoredRepositoryTree(repositoryId: string, path: string) {
+    try {
+      setBusy((prev) => ({ ...prev, repository: true }));
+      setError("");
+      const response = await getGitRepositoryTree(repositoryId, path);
+      setSelectedGitRepositoryId(repositoryId);
+      setStoredRepositoryPath(response.path);
+      setStoredRepositoryEntries(response.entries);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy((prev) => ({ ...prev, repository: false }));
+    }
+  }
+
+  async function openStoredRepositoryFile(repositoryId: string, path: string) {
+    try {
+      setBusy((prev) => ({ ...prev, repositoryFile: true, file: true }));
+      setError("");
+      const response = await getGitRepositoryFile(repositoryId, path);
+      const repository = gitRepositories.find((item) => item.id === repositoryId);
+      setSelectedFile(repository ? `${repository.name}:${response.path}` : response.path);
+      setFileContent(response.content);
+      setSelectedGitRepositoryId(repositoryId);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy((prev) => ({ ...prev, repositoryFile: false, file: false }));
+    }
+  }
+
   async function refreshIndexStatus(showError = true) {
     try {
       const response = await getIndexStatus();
@@ -246,6 +316,32 @@ export default function Explorer() {
       setError((err as Error).message);
     } finally {
       setBusy((prev) => ({ ...prev, index: false }));
+    }
+  }
+
+  async function submitGitRepositoryImport(event: FormEvent) {
+    event.preventDefault();
+
+    const path = repositoryImportPath.trim();
+    if (!path) {
+      setError("Repository path is required.");
+      return;
+    }
+
+    try {
+      setBusy((prev) => ({ ...prev, repository: true }));
+      setError("");
+      const repository = await importGitRepository(path);
+      setGitRepositories((current) => {
+        const remaining = current.filter((item) => item.id !== repository.id);
+        return [repository, ...remaining];
+      });
+      setSelectedGitRepositoryId(repository.id);
+      await loadStoredRepositoryTree(repository.id, "");
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy((prev) => ({ ...prev, repository: false }));
     }
   }
 
@@ -496,6 +592,107 @@ export default function Explorer() {
               <p className="error-inline">
                 Last job failed: {indexStatus.last_completed_job.error ?? "unknown error"}
               </p>
+            ) : null}
+          </section>
+
+          <section className="profile-list">
+            <div className="card-head">
+              <h3>Repository Archive</h3>
+              <button
+                className="ghost"
+                type="button"
+                onClick={() => {
+                  if (!selectedGitRepository) {
+                    return;
+                  }
+                  const parent = storedRepositoryPath.split("/").slice(0, -1).join("/");
+                  void loadStoredRepositoryTree(selectedGitRepository.id, parent);
+                }}
+                disabled={!selectedGitRepository || busy.repository || !storedRepositoryPath}
+              >
+                Up
+              </button>
+            </div>
+            <p className="subtle">
+              Import tracked text files from a git repository under the configured explorer root and
+              store them in Postgres.
+            </p>
+            <form className="search-form" onSubmit={submitGitRepositoryImport}>
+              <label htmlFor="git-repository-path">Git repository path</label>
+              <div className="row">
+                <input
+                  id="git-repository-path"
+                  value={repositoryImportPath}
+                  onChange={(event) => setRepositoryImportPath(event.target.value)}
+                  placeholder="., apps/service, libs/core"
+                />
+                <button type="submit" disabled={busy.repository}>
+                  {busy.repository ? "Importing..." : "Import Repository"}
+                </button>
+              </div>
+            </form>
+            {gitRepositories.length === 0 ? (
+              <p className="subtle">No stored repositories yet.</p>
+            ) : (
+              <ul>
+                {gitRepositories.map((repository) => (
+                  <li key={repository.id}>
+                    <button
+                      type="button"
+                      className="tree-item"
+                      onClick={() => void loadStoredRepositoryTree(repository.id, "")}
+                    >
+                      <strong>{repository.name}</strong>
+                    </button>
+                    <p>{repository.path || "."}</p>
+                    <p>{repository.analysis_summary}</p>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {selectedGitRepository ? (
+              <>
+                <p className="subtle">
+                  {selectedGitRepository.branch
+                    ? `${selectedGitRepository.branch} · `
+                    : ""}
+                  {selectedGitRepository.stored_file_count}/
+                  {selectedGitRepository.tracked_file_count} tracked files stored
+                  {selectedGitRepository.is_dirty ? " · dirty working tree" : ""}
+                </p>
+                <p className="subtle">
+                  Stored path: {storedRepositoryPath || "/"} · languages:{" "}
+                  {selectedGitRepository.languages.map((item) => item.language).join(", ") ||
+                    "none"}
+                </p>
+                <ul className="tree-list">
+                  {storedRepositoryEntries.map((entry) => (
+                    <li key={entry.path}>
+                      {entry.kind === "directory" ? (
+                        <button
+                          type="button"
+                          className="tree-item folder"
+                          onClick={() =>
+                            void loadStoredRepositoryTree(selectedGitRepository.id, entry.path)
+                          }
+                        >
+                          <span>▸</span> {entry.name}
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className="tree-item file"
+                          onClick={() =>
+                            void openStoredRepositoryFile(selectedGitRepository.id, entry.path)
+                          }
+                        >
+                          {entry.name}
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </>
             ) : null}
           </section>
 

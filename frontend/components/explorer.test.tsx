@@ -10,9 +10,13 @@ vi.mock("@/lib/api", () => ({
   askCodebase: vi.fn(),
   getUserProfiles: vi.fn(),
   getFile: vi.fn(),
+  getGitRepositories: vi.fn(),
+  getGitRepositoryFile: vi.fn(),
+  getGitRepositoryTree: vi.fn(),
   getHealth: vi.fn(),
   getIndexStatus: vi.fn(),
   getTree: vi.fn(),
+  importGitRepository: vi.fn(),
   searchCode: vi.fn(),
   searchHybrid: vi.fn(),
   startIndexing: vi.fn()
@@ -24,9 +28,13 @@ vi.mock("@/lib/profile-admin", () => ({
 
 const mockedGetTree = vi.mocked(api.getTree);
 const mockedGetFile = vi.mocked(api.getFile);
+const mockedGetGitRepositories = vi.mocked(api.getGitRepositories);
+const mockedGetGitRepositoryFile = vi.mocked(api.getGitRepositoryFile);
+const mockedGetGitRepositoryTree = vi.mocked(api.getGitRepositoryTree);
 const mockedGetHealth = vi.mocked(api.getHealth);
 const mockedGetIndexStatus = vi.mocked(api.getIndexStatus);
 const mockedGetUserProfiles = vi.mocked(api.getUserProfiles);
+const mockedImportGitRepository = vi.mocked(api.importGitRepository);
 const mockedSearchCode = vi.mocked(api.searchCode);
 const mockedSearchHybrid = vi.mocked(api.searchHybrid);
 const mockedStartIndexing = vi.mocked(api.startIndexing);
@@ -38,6 +46,14 @@ describe("Explorer", () => {
     vi.clearAllMocks();
     mockedGetTree.mockResolvedValue({ path: "", entries: [] });
     mockedGetFile.mockResolvedValue({ path: "main.rs", content: "fn main() {}" });
+    mockedGetGitRepositories.mockResolvedValue([]);
+    mockedGetGitRepositoryFile.mockResolvedValue({
+      path: "src/lib.rs",
+      content: "pub fn answer() -> u32 {\n    42\n}",
+      language: "Rust",
+      line_count: 2
+    });
+    mockedGetGitRepositoryTree.mockResolvedValue({ path: "", entries: [] });
     mockedGetHealth.mockResolvedValue({
       status: "ok",
       root_dir: ".",
@@ -74,6 +90,25 @@ describe("Explorer", () => {
     });
     mockedSearchCode.mockResolvedValue({ query: "alpha", matches: [] });
     mockedSearchHybrid.mockResolvedValue({ query: "alpha", warnings: [], matches: [] });
+    mockedImportGitRepository.mockResolvedValue({
+      id: "repo-1",
+      path: "sample-repo",
+      name: "sample-repo",
+      head_commit: "abc12345",
+      branch: "main",
+      is_dirty: false,
+      tracked_file_count: 3,
+      stored_file_count: 2,
+      skipped_binary_files: 1,
+      skipped_large_files: 0,
+      total_bytes: 42,
+      analysis_summary: "Stored 2 text files from commit abc12345 on branch main.",
+      imported_at: "2026-03-12T00:00:00Z",
+      languages: [
+        { language: "Markdown", file_count: 1, total_bytes: 12 },
+        { language: "Rust", file_count: 1, total_bytes: 30 }
+      ]
+    });
     mockedStartIndexing.mockResolvedValue({
       job_id: "job-1",
       status: "queued",
@@ -206,6 +241,87 @@ describe("Explorer", () => {
     await waitFor(() => {
       expect(mockedStartIndexing).toHaveBeenCalledTimes(1);
     });
+  });
+
+  it("imports a git repository and loads its stored tree", async () => {
+    const user = userEvent.setup();
+    mockedGetGitRepositoryTree.mockResolvedValue({
+      path: "",
+      entries: [
+        { name: "src", path: "src", kind: "directory" },
+        { name: "README.md", path: "README.md", kind: "file" }
+      ]
+    });
+
+    render(<Explorer />);
+
+    await user.clear(screen.getByLabelText("Git repository path"));
+    await user.type(screen.getByLabelText("Git repository path"), "sample-repo");
+    await user.click(screen.getByRole("button", { name: "Import Repository" }));
+
+    await waitFor(() => {
+      expect(mockedImportGitRepository).toHaveBeenCalledWith("sample-repo");
+    });
+    await waitFor(() => {
+      expect(mockedGetGitRepositoryTree).toHaveBeenCalledWith("repo-1", "");
+    });
+    expect(screen.getByText("Stored 2 text files from commit abc12345 on branch main.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "README.md" })).toBeInTheDocument();
+  });
+
+  it("opens a stored repository file from the repository archive", async () => {
+    const user = userEvent.setup();
+    mockedGetGitRepositories.mockResolvedValue([
+      {
+        id: "repo-1",
+        path: "sample-repo",
+        name: "sample-repo",
+        head_commit: "abc12345",
+        branch: "main",
+        is_dirty: true,
+        tracked_file_count: 3,
+        stored_file_count: 2,
+        skipped_binary_files: 1,
+        skipped_large_files: 0,
+        total_bytes: 42,
+        analysis_summary: "Stored 2 text files from commit abc12345 on branch main.",
+        imported_at: "2026-03-12T00:00:00Z",
+        languages: [{ language: "Rust", file_count: 1, total_bytes: 30 }]
+      }
+    ]);
+    mockedGetGitRepositoryTree.mockResolvedValue({
+      path: "",
+      entries: [{ name: "src", path: "src", kind: "directory" }]
+    });
+    mockedGetGitRepositoryFile.mockResolvedValue({
+      path: "src/lib.rs",
+      content: "pub fn answer() -> u32 {\n    42\n}",
+      language: "Rust",
+      line_count: 2
+    });
+
+    render(<Explorer />);
+
+    await waitFor(() => {
+      expect(mockedGetGitRepositoryTree).toHaveBeenCalledWith("repo-1", "");
+    });
+
+    mockedGetGitRepositoryTree.mockResolvedValueOnce({
+      path: "src",
+      entries: [{ name: "lib.rs", path: "src/lib.rs", kind: "file" }]
+    });
+
+    await user.click(await screen.findByRole("button", { name: /src/i }));
+    await waitFor(() => {
+      expect(mockedGetGitRepositoryTree).toHaveBeenCalledWith("repo-1", "src");
+    });
+
+    await user.click(await screen.findByRole("button", { name: "lib.rs" }));
+    await waitFor(() => {
+      expect(mockedGetGitRepositoryFile).toHaveBeenCalledWith("repo-1", "src/lib.rs");
+    });
+    expect(screen.getByText(/pub fn answer/)).toBeInTheDocument();
+    expect(screen.getByText("sample-repo:src/lib.rs")).toBeInTheDocument();
   });
 
   it("renders profile list from API response", async () => {

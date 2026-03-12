@@ -3,9 +3,13 @@ import {
   askCodebase,
   getFile,
   getHealth,
+  getGitRepositories,
+  getGitRepositoryFile,
+  getGitRepositoryTree,
   getIndexStatus,
   getUserProfiles,
   getTree,
+  importGitRepository,
   searchCode,
   searchHybrid,
   startIndexing
@@ -185,6 +189,99 @@ describe("api client", () => {
 
     const calledUrl = requestUrl();
     expect(calledUrl.pathname).toBe("/api/index/status");
+  });
+
+  it("sends JSON POST body for importGitRepository", async () => {
+    const mockFetch = vi.mocked(global.fetch);
+    mockFetch.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "repo-1",
+          path: "sample-repo",
+          name: "sample-repo",
+          head_commit: "abc123",
+          branch: "main",
+          is_dirty: false,
+          tracked_file_count: 3,
+          stored_file_count: 2,
+          skipped_binary_files: 1,
+          skipped_large_files: 0,
+          total_bytes: 42,
+          analysis_summary: "Stored 2 text files",
+          imported_at: "2026-03-12T00:00:00Z",
+          languages: []
+        }),
+        {
+          status: 201,
+          headers: { "Content-Type": "application/json" }
+        }
+      )
+    );
+
+    await importGitRepository("sample-repo");
+
+    const calledUrlValue = mockFetch.mock.calls[0][0] as string;
+    const calledOptions = mockFetch.mock.calls[0][1] as RequestInit;
+    expect(calledUrlValue).toBe("/api/git/repositories/import");
+    expect(calledOptions.method).toBe("POST");
+    expect(calledOptions.body).toBe(JSON.stringify({ path: "sample-repo" }));
+    const headers = new Headers(calledOptions.headers as HeadersInit | undefined);
+    expect(headers.get("Content-Type")).toBe("application/json");
+  });
+
+  it("calls git repository list endpoint", async () => {
+    const mockFetch = vi.mocked(global.fetch);
+    mockFetch.mockResolvedValue(
+      new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      })
+    );
+
+    await getGitRepositories();
+
+    const calledUrl = requestUrl();
+    expect(calledUrl.pathname).toBe("/api/git/repositories");
+  });
+
+  it("encodes path for getGitRepositoryTree", async () => {
+    const mockFetch = vi.mocked(global.fetch);
+    mockFetch.mockResolvedValue(
+      new Response(JSON.stringify({ path: "src", entries: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      })
+    );
+
+    await getGitRepositoryTree("repo-1", "src");
+
+    const calledUrl = requestUrl();
+    expect(calledUrl.pathname).toBe("/api/git/repositories/repo-1/tree");
+    expect(calledUrl.searchParams.get("path")).toBe("src");
+  });
+
+  it("encodes path for getGitRepositoryFile", async () => {
+    const mockFetch = vi.mocked(global.fetch);
+    mockFetch.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          path: "src/lib.rs",
+          content: "pub fn answer() -> u32 { 42 }",
+          language: "Rust",
+          line_count: 1
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        }
+      )
+    );
+
+    await getGitRepositoryFile("repo-1", "src/lib.rs");
+
+    const calledUrl = requestUrl();
+    expect(calledUrl.pathname).toBe("/api/git/repositories/repo-1/file");
+    expect(calledUrl.searchParams.get("path")).toBe("src/lib.rs");
   });
 
   it("loads user profiles", async () => {
