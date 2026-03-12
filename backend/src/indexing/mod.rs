@@ -499,21 +499,21 @@ impl IndexingService {
             .collect::<Vec<_>>();
 
         let repository_id = self
-            .persist_git_repository(
-                &repository_path,
-                &repository_name,
-                &head_commit,
-                (!branch.is_empty()).then_some(branch.as_str()),
+            .persist_git_repository(PersistGitRepositoryRequest {
+                path: repository_path,
+                name: repository_name,
+                head_commit,
+                branch: (!branch.is_empty()).then_some(branch),
                 is_dirty,
                 tracked_file_count,
                 stored_file_count,
                 skipped_binary_files,
                 skipped_large_files,
                 total_bytes,
-                &analysis_summary,
-                &language_stats,
-                &files,
-            )
+                analysis_summary,
+                language_stats,
+                files,
+            })
             .await?;
 
         self.fetch_git_repository(repository_id)
@@ -1356,20 +1356,23 @@ impl IndexingService {
 
     async fn persist_git_repository(
         &self,
-        path: &str,
-        name: &str,
-        head_commit: &str,
-        branch: Option<&str>,
-        is_dirty: bool,
-        tracked_file_count: i64,
-        stored_file_count: i64,
-        skipped_binary_files: i64,
-        skipped_large_files: i64,
-        total_bytes: i64,
-        analysis_summary: &str,
-        language_stats: &[GitRepositoryLanguageStatView],
-        files: &[StoredRepositoryFile],
+        request: PersistGitRepositoryRequest,
     ) -> Result<Uuid, GitRepositoryError> {
+        let PersistGitRepositoryRequest {
+            path,
+            name,
+            head_commit,
+            branch,
+            is_dirty,
+            tracked_file_count,
+            stored_file_count,
+            skipped_binary_files,
+            skipped_large_files,
+            total_bytes,
+            analysis_summary,
+            language_stats,
+            files,
+        } = request;
         let mut tx = self.inner.pool.begin().await.map_err(|error| {
             GitRepositoryError::Message(format!(
                 "failed to open git repository persistence transaction: {error}"
@@ -1411,9 +1414,9 @@ impl IndexingService {
             ",
         )
         .bind(Uuid::new_v4())
-        .bind(path)
-        .bind(name)
-        .bind(head_commit)
+        .bind(&path)
+        .bind(&name)
+        .bind(&head_commit)
         .bind(branch)
         .bind(is_dirty)
         .bind(tracked_file_count)
@@ -1421,7 +1424,7 @@ impl IndexingService {
         .bind(skipped_binary_files)
         .bind(skipped_large_files)
         .bind(total_bytes)
-        .bind(analysis_summary)
+        .bind(&analysis_summary)
         .fetch_one(&mut *tx)
         .await
         .map_err(|error| {
@@ -1448,7 +1451,7 @@ impl IndexingService {
                 ))
             })?;
 
-        for stat in language_stats {
+        for stat in &language_stats {
             sqlx::query(
                 "
                 INSERT INTO git_repository_language_stats (
@@ -1473,7 +1476,7 @@ impl IndexingService {
             })?;
         }
 
-        for file in files {
+        for file in &files {
             sqlx::query(
                 "
                 INSERT INTO git_repository_files (
@@ -1677,6 +1680,23 @@ struct StoredRepositoryFile {
     size_bytes: i64,
     line_count: i32,
     language: String,
+}
+
+#[derive(Debug)]
+struct PersistGitRepositoryRequest {
+    path: String,
+    name: String,
+    head_commit: String,
+    branch: Option<String>,
+    is_dirty: bool,
+    tracked_file_count: i64,
+    stored_file_count: i64,
+    skipped_binary_files: i64,
+    skipped_large_files: i64,
+    total_bytes: i64,
+    analysis_summary: String,
+    language_stats: Vec<GitRepositoryLanguageStatView>,
+    files: Vec<StoredRepositoryFile>,
 }
 
 #[derive(Debug, Default)]
